@@ -72,7 +72,7 @@ def train_model_extended(data_dir, algo="lightgbm", params={}, feature_version=2
         return xb.train(params, xb.DMatrix(X_train[train_rows], y_train[train_rows]))
     return lgbm_model
 
-
+'''
 data_dir = '/analytics/playground/aizat/ember/dataset/ember2018'
 X_train, y_train, X_test, y_test = read_vectorized_features(data_dir, feature_version=2)
 params = optimize_model_best(data_dir)
@@ -80,3 +80,4 @@ print("Best parameters: ")
 print(json.dumps(params, indent=2))
 lgbm_model = train_model(data_dir, params, feature_version=2)
 lgbm_model.save_model(os.path.join(data_dir, "ember_model_best.txt"))
+'''

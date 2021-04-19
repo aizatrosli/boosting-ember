@@ -1,12 +1,23 @@
 import numpy as np
 import pandas as pd
 import lightgbm as lgb
-import joblib,time,os,sys,json
+import joblib, time, os, sys, json, logging, inspect, gc
 from sklearn.metrics import (roc_auc_score, make_scorer)
 from sklearn.metrics import roc_auc_score, roc_curve
 from sklearn.model_selection import GridSearchCV
 from sklearn.model_selection import TimeSeriesSplit
 from ember import *
+
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+
+file_handler = logging.FileHandler('logfile.log')
+formatter    = logging.Formatter('%(asctime)s : %(levelname)s : %(name)s : %(message)s')
+file_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
+
+
 
 def optimize_model_best(data_dir):
     """
@@ -47,6 +58,49 @@ def optimize_model_best(data_dir):
     joblib.dump(grid, 'lgb_{}_{}.pkl'.format(os.path.split(data_dir)[-1],time.strftime("%Y%m%d-%H%M%S")))
 
     return grid.best_params_
+
+
+def get_dataset(data_dir, feature_version=2):
+    X_train, y_train = read_vectorized_features(data_dir, "train", feature_version)
+
+
+def read_data_record(raw_features_string):
+    """
+    Decode a raw features string and return the metadata fields
+    """
+    all_data = json.loads(raw_features_string)
+    return {k: all_data[k] for k in all_data.keys()}
+
+
+def create_resize_data(data_dir, size=100000, cache=False, random=False):
+    """
+    Write metadata to a csv file and return its dataframe
+    """
+    pool = multiprocessing.Pool()
+
+    train_feature_paths = [os.path.join(data_dir, "train_features_{}.jsonl".format(i)) for i in range(6)]
+    train_metadf = pd.DataFrame(list(pool.imap(read_data_record, raw_feature_iterator(train_feature_paths))))
+    train_metadfsize = pd.concat(
+        [train_metadf[train_metadf['label'] == 0].head(size), train_metadf[train_metadf['label'] == 1].head(size),
+         train_metadf[train_metadf['label'] == -1].head(size)], ignore_index=True) if not random else pd.concat(
+        [train_metadf[train_metadf['label'] == 0].sample(size), train_metadf[train_metadf['label'] == 1].sample(size),
+         train_metadf[train_metadf['label'] == -1].sample(size)], ignore_index=True)
+    logging.info(f'Train original size : {train_metadf.shape} | Train resize size : {train_metadfsize.shape}')
+    if cache:
+        train_metadf.to_pickle(os.path.join(data_dir, "train.data"), compression=None)
+    del train_metadf
+    train_metadfsize.to_pickle(os.path.join(data_dir, f"train_{size * 3}.data"), compression=None)
+    del train_metadfsize
+    gc.collect()
+
+    test_feature_paths = [os.path.join(data_dir, "test_features.jsonl")]
+    test_metadf = pd.DataFrame(list(pool.imap(read_data_record, raw_feature_iterator(test_feature_paths))))
+    test_metadf.to_pickle(os.path.join(data_dir, "test.data"), compression=None)
+    logging.info(f'Test size : {test_metadf.shape}')
+    del test_metadf
+    gc.collect()
+
+    return data_dir
 
 
 def train_model_extended(data_dir, algo="lightgbm", params={}, feature_version=2):

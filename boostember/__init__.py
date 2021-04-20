@@ -18,6 +18,17 @@ file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
 
 
+def mlflowsetup(url, file='mlflow.json'):
+    import requests, pickle, os, json
+    data = pickle.loads(requests.get(url).content)
+    for key,val in data.items():
+        if type(val) is str:
+            os.environ[key]=val
+    with open(file, 'w') as fp:
+        json.dump(data['gcloud'], fp)
+    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = file
+    return True
+
 
 def optimize_model_best(data_dir):
     """

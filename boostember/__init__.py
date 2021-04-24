@@ -20,7 +20,8 @@ logger.addHandler(file_handler)
 
 def mlflowsetup(url, file='mlflow.json'):
     import requests, pickle, os, json
-    data = pickle.loads(requests.get(url).content)
+    from urllib.parse import urlparse
+    data = pickle.loads(requests.get(url).content) if urlparse(url).scheme else pickle.loads(open(url, 'rb').read())
     for key,val in data.items():
         if type(val) is str:
             os.environ[key]=val

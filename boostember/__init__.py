@@ -1,12 +1,11 @@
 import numpy as np
 import pandas as pd
 import lightgbm as lgb
-import joblib, time, os, sys, json, logging, inspect, gc
-from sklearn.metrics import (roc_auc_score, make_scorer)
-from sklearn.metrics import roc_auc_score, roc_curve
-from sklearn.model_selection import GridSearchCV
-from sklearn.model_selection import TimeSeriesSplit
+import joblib, time, os, sys, json, logging, inspect, gc, multiprocessing
 from ember import *
+from sklearn.model_selection import GridSearchCV, TimeSeriesSplit, cross_validate
+from sklearn.metrics import accuracy_score, roc_auc_score, roc_curve, confusion_matrix, make_scorer
+from memory_profiler import profile
 
 
 logger = logging.getLogger(__name__)
@@ -16,6 +15,34 @@ file_handler = logging.FileHandler('logfile.log')
 formatter    = logging.Formatter('%(asctime)s : %(levelname)s : %(name)s : %(message)s')
 file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
+
+
+
+'''
+Scoring methodology return values as dictionary
+eg. 
+    scoring = {'AUC': 'roc_auc', 'Accuracy': make_scorer(accuracy_score)}
+'''
+
+
+def scorecheck():
+    return {'AUC': roc_auc_score, 'ConfusionMatrix': confusion_matrix, 'Accuracy': make_scorer(accuracy_score)}
+
+
+def generic_crossvalidation(model, X, y, score, nsplit=3):
+    '''
+
+    explaination:
+    Multimetric scoring can either be specified as a list of strings of predefined scores names or a dict mapping the
+    scorer name to the scorer function and/or the predefined scorer name(s). See Using multiple metric evaluation for
+    more details. When specifying multiple metrics, the refit parameter must be set to the metric (string) for which
+    the *best_params_* will be found and used to build the best_estimator_ on the whole dataset. If the search should not
+    be refit, set refit=False. Leaving refit to the default value None will result in an error when using multiple metrics.
+    :return:
+    '''
+
+    cv = TimeSeriesSplit(n_splits=nsplit).split(X)
+    return cross_validate(model, X, y, scoring=score, cv=cv, n_jobs=multiprocessing.cpu_count()/4, verbose=10)
 
 
 def mlflowsetup(url, file='mlflow.json'):

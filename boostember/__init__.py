@@ -4,7 +4,7 @@ import lightgbm as lgb
 import joblib, time, os, sys, json, logging, inspect, gc, multiprocessing
 from ember import *
 from sklearn.model_selection import GridSearchCV, TimeSeriesSplit, cross_validate
-from sklearn.metrics import accuracy_score, roc_auc_score, roc_curve, confusion_matrix, make_scorer
+from sklearn.metrics import accuracy_score, roc_auc_score, roc_curve, confusion_matrix, make_scorer, average_precision_score
 from memory_profiler import profile
 
 
@@ -17,19 +17,19 @@ file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
 
 
-
-'''
-Scoring methodology return values as dictionary
-eg. 
-    scoring = {'AUC': 'roc_auc', 'Accuracy': make_scorer(accuracy_score)}
-'''
-
-
 def scorecheck():
-    return {'AUC': roc_auc_score, 'ConfusionMatrix': confusion_matrix, 'Accuracy': make_scorer(accuracy_score)}
+    '''
+    Scoring methodology return values as dictionary
+    eg.
+    scoring = {'AUC': 'roc_auc', 'Accuracy': make_scorer(accuracy_score)}
+    :return:
+    '''
+    return {'roc_auc': make_scorer(roc_auc_score, max_fpr=5e-3),
+            'precision': make_scorer(average_precision_score),
+            'accuracy': make_scorer(accuracy_score)}
 
 
-def generic_crossvalidation(model, X, y, score, nsplit=3):
+def generic_crossvalidation(model, X, y, nsplit=3):
     '''
 
     explaination:
@@ -42,7 +42,7 @@ def generic_crossvalidation(model, X, y, score, nsplit=3):
     '''
 
     cv = TimeSeriesSplit(n_splits=nsplit).split(X)
-    return cross_validate(model, X, y, scoring=score, cv=cv, n_jobs=multiprocessing.cpu_count()/4, verbose=10)
+    return cross_validate(model, X, y, scoring=scorecheck(), cv=cv, n_jobs=multiprocessing.cpu_count()/4, verbose=10)
 
 
 def mlflowsetup(url, file='mlflow.json'):
@@ -97,6 +97,31 @@ def optimize_model_best(data_dir):
     joblib.dump(grid, 'lgb_{}_{}.pkl'.format(os.path.split(data_dir)[-1],time.strftime("%Y%m%d-%H%M%S")))
 
     return grid.best_params_
+
+
+def yield_artifacts(run_id, path=None):
+    """Yield all artifacts in the specified run"""
+    client = mlflow.tracking.MlflowClient()
+    for item in client.list_artifacts(run_id, path):
+        if item.is_dir:
+            yield from yield_artifacts(run_id, item.path)
+        else:
+            yield item.path
+
+
+def fetch_logged_data(run_id):
+    """Fetch params, metrics, tags, and artifacts in the specified run"""
+    client = mlflow.tracking.MlflowClient()
+    data = client.get_run(run_id).data
+    # Exclude system tags: https://www.mlflow.org/docs/latest/tracking.html#system-tags
+    tags = {k: v for k, v in data.tags.items() if not k.startswith("mlflow.")}
+    artifacts = list(yield_artifacts(run_id))
+    return {
+        "params": data.params,
+        "metrics": data.metrics,
+        "tags": tags,
+        "artifacts": artifacts,
+    }
 
 
 def get_dataset(data_dir, feature_version=2):

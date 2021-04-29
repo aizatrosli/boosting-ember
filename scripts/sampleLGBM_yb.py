@@ -11,10 +11,14 @@ sys.path.append(boostingpath)
 import lightgbm as lgb
 import ember
 import boostember
+import daal4py as d4p
 from boostember import *
 from boostember.features_extended import *
 from sklearn.utils import shuffle
-
+from sklearn.model_selection import learning_curve
+from sklearnex import patch_sklearn
+from yellowbrick.model_selection import LearningCurve
+patch_sklearn()
 
 boostember.mlflowsetup(os.path.join(boostingpath, 'mlflow'))
 
@@ -39,23 +43,29 @@ params = {
         'objective':['binary'],
         }
 
-nsplit=1000
+scorecheck = {
+        'roc_auc': make_scorer(roc_auc_score, max_fpr=5e-3),
+        'precision': make_scorer(average_precision_score),
+        'accuracy': make_scorer(accuracy_score)
+        }
 
-with mlflow.start_run(run_name="demo_ember_lightgbm_multimetrics") as run:
-    mlflow.set_tags({"description": "Demo","model": "lightgbm","summary": f"multimetrics with {nsplit}"})
+nsplit=3
+
+with mlflow.start_run(run_name="demo_ember_lightgbm_lc_cpuboost") as run:
+    mlflow.set_tags({"description": "Demo","model": "lightgbm","summary": f"lc with {nsplit} cpu boost"})
     lgbm_dataset = lgb.Dataset(X_train, y_train)
-    lgbm_model = lgb.LGBMClassifier(boosting_type='gbdt', n_jobs=int(multiprocessing.cpu_count()/4))
-    scorecheck = {'roc_auc': make_scorer(roc_auc_score, max_fpr=5e-3),
-            'precision': make_scorer(average_precision_score),
-            'accuracy': make_scorer(accuracy_score)}
-    cv_ember = GridSearchCV(estimator=lgbm_model, param_grid=params, scoring=scorecheck, cv=TimeSeriesSplit(n_splits=nsplit).split(X_train), n_jobs=int(multiprocessing.cpu_count()/4), verbose=10, refit='accuracy')
+    lgbm_model = lgb.LGBMClassifier(boosting_type='gbdt', objective='binary', n_jobs=int(multiprocessing.cpu_count()/4))
+
+
+    cv_ember = LearningCurve(estimator=lgbm_model, scoring=make_scorer(accuracy_score), shuffle=True, cv=TimeSeriesSplit(n_splits=nsplit).split(X_train), n_jobs=1, verbose=10)
     cv_ember.fit(X_train, y_train)
+    cv_ember.show(outpath='learningcurve.png')
     mlflow.log_param('n_split',nsplit)
     joblib.dump(lgbm_model, 'model.pkl')
-    mlflow.log_artifact('model.pkl', 'raw')
-    joblib.dump(cv_ember.best_estimator_, 'estimator.pkl')
-    mlflow.log_artifact('estimator.pkl', 'raw')
-    mlflow.log_dict(cv_ember.best_params_, 'best_params.json')
+    mlflow.log_artifact('model.pkl', 'additional')
+    mlflow.log_artifact('learningcurve.png', 'additional')
+    print(dir(cv_ember))
+    #mlflow.log_dict(cv_ember.best_params_, 'best_params.json')
     #mlflow.log_dict(cv_ember.cv_results_, 'cv_results.json')
     for key,data in fetch_logged_data(run.info.run_id).items():
         print("\n---------- logged {} ----------".format(key))

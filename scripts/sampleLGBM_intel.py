@@ -11,10 +11,12 @@ sys.path.append(boostingpath)
 import lightgbm as lgb
 import ember
 import boostember
+import daal4py as d4p
 from boostember import *
 from boostember.features_extended import *
 from sklearn.utils import shuffle
-
+from sklearnex import patch_sklearn
+patch_sklearn()
 
 boostember.mlflowsetup(os.path.join(boostingpath, 'mlflow'))
 
@@ -39,16 +41,16 @@ params = {
         'objective':['binary'],
         }
 
-nsplit=1000
+nsplit=10000
 
-with mlflow.start_run(run_name="demo_ember_lightgbm_multimetrics") as run:
-    mlflow.set_tags({"description": "Demo","model": "lightgbm","summary": f"multimetrics with {nsplit}"})
+with mlflow.start_run(run_name="demo_ember_lightgbm_multimetrics_cpuboost") as run:
+    mlflow.set_tags({"description": "Demo","model": "lightgbm","summary": f"multimetrics with {nsplit} cpu boost"})
     lgbm_dataset = lgb.Dataset(X_train, y_train)
     lgbm_model = lgb.LGBMClassifier(boosting_type='gbdt', n_jobs=int(multiprocessing.cpu_count()/4))
     scorecheck = {'roc_auc': make_scorer(roc_auc_score, max_fpr=5e-3),
             'precision': make_scorer(average_precision_score),
             'accuracy': make_scorer(accuracy_score)}
-    cv_ember = GridSearchCV(estimator=lgbm_model, param_grid=params, scoring=scorecheck, cv=TimeSeriesSplit(n_splits=nsplit).split(X_train), n_jobs=int(multiprocessing.cpu_count()/4), verbose=10, refit='accuracy')
+    cv_ember = GridSearchCV(estimator=lgbm_model, param_grid=params, scoring=scorecheck, cv=TimeSeriesSplit(n_splits=nsplit).split(X_train), n_jobs=2, verbose=10, refit='accuracy')
     cv_ember.fit(X_train, y_train)
     mlflow.log_param('n_split',nsplit)
     joblib.dump(lgbm_model, 'model.pkl')

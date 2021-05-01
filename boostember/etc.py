@@ -1,15 +1,14 @@
-import multiprocessing
-import json,os
-import pandas as pd
-import logging
-from ember import *
-
-data_dir2018 = '/root/dataset/ember2018/'
-data_dir2017 = '/root/dataset/ember_2017_2/'
+import ember
 
 
 
 
 
-create_fdata(data_dir2018)
-create_fdata(data_dir2017)
+
+class boosting(object):
+
+    def __init__(self, model, datapath=None):
+        self.model = model
+
+    def model_execution(self):
+        self.test

@@ -53,24 +53,28 @@ disparr = []
 
 with mlflow.start_run(run_name="demo_ember_xgboost_cpuboost") as run:
     mlflow.set_tags({"description": "Demo","model": "xgboost","summary": f"cv with {nsplit} cpu boost"})
+    starttime = time.time()
     model = xgb.XGBClassifier(booster="dart", objective="binary:logistic", n_jobs=-2)
     model.fit(X_train, y_train)
+    mlflow.log_metric('fit_time', time.time()-starttime)
     mlflow.log_param('n_split', nsplit)
-    mlflow.sklearn.log_model(model)
-    mlflow.xgboost.log_model(model.get_booster())
+    mlflow.sklearn.log_model(model, 'skmodel')
+    mlflow.xgboost.log_model(model.get_booster(), 'xgbmodel')
     mlflow.log_params(model.get_params())
     for ix, (train_ix, test_ix) in enumerate(TimeSeriesSplit(n_splits=nsplit).split(X_train)):
         with mlflow.start_run(run_name=f'cross_validation_{ix}', nested=True) as child_run:
             cvmodel = model.copy()
+            cvtime = time.time()
             cvmodel.fit(X_train[train_ix], y_train[train_ix])
+            mlflow.log_metric('fit_time', time.time() - cvtime)
             disp = plot_roc_curve(cvmodel, X_test, y_test)
             disparr.append(disp)
             mlflow.log_figure(disp.figure_, f"{ix}_plot_roc_curve.png")
             mlflow.sklearn.eval_and_log_metrics(model=cvmodel, X=X_test, y_true=y_test, prefix=f'{ix}')
-            mlflow.sklearn.log_model(cvmodel)
-            mlflow.xgboost.log_model(cvmodel.get_booster())
+            mlflow.sklearn.log_model(cvmodel, 'skmodel')
+            mlflow.xgboost.log_model(cvmodel.get_booster(), 'xgbmodel')
             mlflow.log_params(cvmodel.get_params())
-
+    mlflow.log_metric('validation_time', time.time() - starttime)
     #joblib.dump(model.best_estimator_, 'estimator.pkl')
     #mlflow.log_artifact('estimator.pkl', 'raw')
     #mlflow.log_dict(model.best_params_, 'best_params.json')

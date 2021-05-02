@@ -18,6 +18,12 @@ file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
 
 
+
+
+
+
+
+
 def scorecheck():
     '''
     Scoring methodology return values as dictionary

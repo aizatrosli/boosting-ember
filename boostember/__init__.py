@@ -1,26 +1,108 @@
-import mlflow
+import joblib, time, os, sys, json, logging, inspect, gc, multiprocessing
+from copy import deepcopy
 import numpy as np
 import pandas as pd
+
 import lightgbm as lgb
-import joblib, time, os, sys, json, logging, inspect, gc, multiprocessing
+import xgboost as xgb
+import catboost as cb
+
+
 from ember import *
 from sklearn.model_selection import GridSearchCV, TimeSeriesSplit, cross_validate
 from sklearn.metrics import accuracy_score, roc_auc_score, roc_curve, confusion_matrix, make_scorer, average_precision_score
 from memory_profiler import profile
 
 
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
-
-file_handler = logging.FileHandler('logfile.log')
-formatter    = logging.Formatter('%(asctime)s : %(levelname)s : %(name)s : %(message)s')
-file_handler.setFormatter(formatter)
-logger.addHandler(file_handler)
 
 
 
+class Boosting(object):
+
+    def __init__(self, session, booster='lgbm', features=None, url=None, configpath='config/fyp.json'):
+        import mlflow, ember
+        self._ember = ember
+        self._mlflow = mlflow
+        self.booster = booster
+        self.startsessiontime = None
+        self.model = None
+        self.projectpath = os.path.dirname(os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentframe()))))
+        self.logger = self.create_logsession(session)
+        self.config = self.load_config(os.path.join(self.projectpath, configpath))
+        if url is None:
+            self.setup_mlflow(os.path.join(self.projectpath, 'config', 'mlflow'))
+        else:
+            self.setup_mlflow(url)
+
+        self.X_train, self.y_train, self.X_test, self.y_test = self.load_data()
 
 
+    def load_config(self, configpath):
+        with open(configpath, 'rb') as fp:
+            return json.load(fp)
+
+
+    def setup_mlflow(self, url, file='mlflow.json'):
+        import requests, pickle
+        from urllib.parse import urlparse
+        data = pickle.loads(requests.get(url).content) if urlparse(url).scheme else pickle.loads(open(url, 'rb').read())
+        self.config.update(data)
+        for key, val in data.items():
+            if type(val) is str:
+                os.environ[key] = val
+        with open(file, 'w') as fp:
+            json.dump(data['gcloud'], fp)
+        os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = file
+
+
+    def create_logsession(self, session='New'):
+        self.logger = logging.getLogger(__name__)
+        self.logger.setLevel(logging.DEBUG)
+
+        file_handler = logging.FileHandler('logfile.log')
+        formatter = logging.Formatter('%(asctime)s : %(levelname)s : %(name)s : %(message)s')
+        file_handler.setFormatter(formatter)
+        self.logger.addHandler(file_handler)
+        return self.logger
+
+    def params(self, estimator, stage=''):
+        self.stage = [stage] if stage else []
+        params = estimator.get_all_params() if self.model == 'cb' else estimator.get_params()
+        self._mlflow.log_params(params)
+
+
+    def metrics(self, estimator, stage=''):
+        self.stage = [stage] if stage else []
+        self._mlflow.log_metric(self.keyname('fit_time'), time.time()-self.startsessiontime)
+        self._mlflow.sklearn.eval_and_log_metrics(model=estimator, X=self.X_test, y_true=self.y_test, prefix=f'{stage}_')
+
+    def keyname(self, name):
+        return '_'.join(self.stage + [name])
+
+    def load_data(self):
+        return self._ember.read_vectorized_features(datasetpath)
+
+    def train_execution(self):
+        if self.booster == 'lgbm':
+            self.model = lgb.LGBMClassifier()
+        elif self.booster == 'xgb':
+            self.model = xgb.XGBClassifier()
+        elif self.booster == 'cb':
+            self.model = cb.CatBoostClassifier()
+        self.model.fit()
+
+
+    def cv_execution(self, n=5, copy=True):
+        for cv, (train_ix, test_ix) in enumerate(TimeSeriesSplit(n_split=n).split(self.X_train)):
+            cvmodel = deepcopy(self.model) if copy else self.model
+            cvmodel.fit(self.X_train[train_ix], self.y_train[train_ix])
+
+
+
+
+    def main(self):
+        self.startsessiontime = time.time()
+        self.train_execution()
 
 
 

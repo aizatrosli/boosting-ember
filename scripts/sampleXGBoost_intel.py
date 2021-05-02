@@ -20,7 +20,7 @@ from sklearn.utils import shuffle
 from sklearnex import patch_sklearn
 patch_sklearn()
 
-boostember.mlflowsetup(os.path.join(boostingpath, 'mlflow'))
+boostember.mlflowsetup(os.path.join(boostingpath, 'config/mlflow'))
 
 
 X_train, y_train, X_test, y_test = ember.read_vectorized_features(datasetpath)
@@ -66,8 +66,7 @@ with mlflow.start_run(run_name="demo_ember_xgboost_cpuboost") as run:
     mlflow.xgboost.log_model(model.get_booster(), 'xgbmodel')
     mlflow.log_params(model.get_params())
     fig = plot_importance(model.get_booster())
-    print(dir(fig))
-    mlflow.log_figure(fig, f"importance_feature.png")
+    mlflow.log_figure(fig.figure, f"importance_feature.png")
     if cvrun:
         for ix, (train_ix, test_ix) in enumerate(TimeSeriesSplit(n_splits=nsplit).split(X_train)):
             with mlflow.start_run(run_name=f'cross_validation_{ix}', nested=True) as child_run:

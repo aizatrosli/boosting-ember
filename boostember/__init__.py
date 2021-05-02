@@ -1,5 +1,6 @@
 import joblib, time, os, sys, json, logging, inspect, gc, multiprocessing
 from copy import deepcopy
+from memory_profiler import memory_usage
 import numpy as np
 import pandas as pd
 
@@ -9,23 +10,24 @@ import catboost as cb
 
 
 from ember import *
+from features_extended import *
 from sklearn.model_selection import GridSearchCV, TimeSeriesSplit, cross_validate
 from sklearn.metrics import accuracy_score, roc_auc_score, roc_curve, confusion_matrix, make_scorer, average_precision_score
-from memory_profiler import profile
 
-
-
+from sklearnex import patch_sklearn
+patch_sklearn()
 
 
 class Boosting(object):
 
-    def __init__(self, session, booster='lgbm', features=None, url=None, configpath='config/fyp.json'):
+    def __init__(self, session, booster='lgbm', dataset='ember2018', features=None, min_features=20, url=None, configpath='config/fyp.json'):
         import mlflow, ember
+        self.startsessiontime, self.memmetrics, self.model = None, None, None
         self._ember = ember
         self._mlflow = mlflow
         self.booster = booster
-        self.startsessiontime = None
-        self.model = None
+        self.min_features = min_features
+
         self.projectpath = os.path.dirname(os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentframe()))))
         self.logger = self.create_logsession(session)
         self.config = self.load_config(os.path.join(self.projectpath, configpath))
@@ -33,14 +35,16 @@ class Boosting(object):
             self.setup_mlflow(os.path.join(self.projectpath, 'config', 'mlflow'))
         else:
             self.setup_mlflow(url)
-
-        self.X_train, self.y_train, self.X_test, self.y_test = self.load_data()
-
+        self.X_train, self.y_train, self.X_test, self.y_test = self.load_data(dataset)
+        self.features = emberfeatures().features
+        if features is not None and isinstance(features, list) and len(self.features) == len(self.X_train.shape[1]):
+            features_ix = [self.features.index(x) for i,x in enumerate(features)]
+            self.X_train, self.X_test = self.X_train[:, features_ix], self.X_test[:, features_ix]
+            self.features = features
 
     def load_config(self, configpath):
         with open(configpath, 'rb') as fp:
             return json.load(fp)
-
 
     def setup_mlflow(self, url, file='mlflow.json'):
         import requests, pickle
@@ -48,7 +52,7 @@ class Boosting(object):
         data = pickle.loads(requests.get(url).content) if urlparse(url).scheme else pickle.loads(open(url, 'rb').read())
         self.config.update(data)
         for key, val in data.items():
-            if type(val) is str:
+            if isinstance(val, str):
                 os.environ[key] = val
         with open(file, 'w') as fp:
             json.dump(data['gcloud'], fp)
@@ -67,7 +71,7 @@ class Boosting(object):
 
     def params(self, estimator, stage=''):
         self.stage = [stage] if stage else []
-        params = estimator.get_all_params() if self.model == 'cb' else estimator.get_params()
+        params = estimator.get_all_params() if self.booster == 'cb' else estimator.get_params()
         self._mlflow.log_params(params)
 
 
@@ -75,34 +79,73 @@ class Boosting(object):
         self.stage = [stage] if stage else []
         self._mlflow.log_metric(self.keyname('fit_time'), time.time()-self.startsessiontime)
         self._mlflow.sklearn.eval_and_log_metrics(model=estimator, X=self.X_test, y_true=self.y_test, prefix=f'{stage}_')
+        if self.min_features:
+            fi_df = pd.DataFrame(sorted(zip(estimator.feature_importances_, self.features)), columns=['Value', 'Features'])
+            fi_df = fi_df.sort_values(by='Value', ascending=False)
+            fi_df.to_csv(f'features_importance_{stage}.csv', index=False)
+            self._mlflow.log_artifact(f'features_importance_{stage}.csv')
+            fig = fi_df.head(self.min_features).plot.barh(x='Features', y='Value')
+            self._mlflow.log_figure(fig.figure, f'features_importance_{stage}.png')
+
+        if self.memmetrics:
+            df = pd.DataFrame({'time (seconds)': np.linspace(0, len(self.memmetrics) * .1, len(self.memmetrics)),
+                               f'Memory consumption {stage} (in MB)': self.memmetrics})
+            df.to_csv('memory_training.csv', index=False)
+            self._mlflow.log_artifact('memory_training.csv')
+            df = df.set_index(['time (seconds)'])
+            fig = df.plot.line()
+            self._mlflow.log_figure(fig.figure, 'memory_training.png')
 
     def keyname(self, name):
         return '_'.join(self.stage + [name])
 
-    def load_data(self):
+    def load_data(self,datasetpath):
+        if not os.path.exists(datasetpath):
+            raise FileNotFoundError("Make sure dataset has been converted!")
         return self._ember.read_vectorized_features(datasetpath)
 
-    def train_execution(self):
+    def save_model(self, estimator):
+        self._mlflow.sklearn.log_model(estimator, 'skmodel')
         if self.booster == 'lgbm':
+            self._mlflow.lightgbm.log_model(estimator.booster_, 'model')
+        elif self.booster == 'xgb':
+            self._mlflow.lightgbm.log_model(estimator.get_booster(), 'model')
+        elif self.booster == 'cb':
+            self._mlflow.catboost.log_model(estimator, 'model')
+
+    def train_execution(self, params):
+        self._mlflow.sklearn.autolog()
+        if self.booster == 'lgbm':
+            self._mlflow.lightgbm.autolog()
             self.model = lgb.LGBMClassifier()
         elif self.booster == 'xgb':
+            self._mlflow.xgboost.autolog()
             self.model = xgb.XGBClassifier()
         elif self.booster == 'cb':
             self.model = cb.CatBoostClassifier()
-        self.model.fit()
-
+        self.model.fit(self.X_train, self.y_train)
 
     def cv_execution(self, n=5, copy=True):
         for cv, (train_ix, test_ix) in enumerate(TimeSeriesSplit(n_split=n).split(self.X_train)):
             cvmodel = deepcopy(self.model) if copy else self.model
             cvmodel.fit(self.X_train[train_ix], self.y_train[train_ix])
+            self.params(cvmodel, stage=f'{cv}')
+            self.metrics(cvmodel, stage=f'{cv}')
+            self.save_model(cvmodel)
 
 
 
 
-    def main(self):
+
+    def main(self, cv=True, n=3):
+
         self.startsessiontime = time.time()
-        self.train_execution()
+        self.memmetrics = memory_usage(self.train_execution, (params,))
+        self.save_model(self.model)
+        if cv:
+            self.cv_execution(n)
+
+
 
 
 
@@ -189,6 +232,7 @@ def optimize_model_best(data_dir):
 
 
 def yield_artifacts(run_id, path=None):
+    import mlflow
     """Yield all artifacts in the specified run"""
     client = mlflow.tracking.MlflowClient()
     for item in client.list_artifacts(run_id, path):
@@ -199,6 +243,7 @@ def yield_artifacts(run_id, path=None):
 
 
 def fetch_logged_data(run_id):
+    import mlflow
     """Fetch params, metrics, tags, and artifacts in the specified run"""
     client = mlflow.tracking.MlflowClient()
     data = client.get_run(run_id).data

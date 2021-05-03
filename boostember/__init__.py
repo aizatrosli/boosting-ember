@@ -10,7 +10,7 @@ import catboost as cb
 
 
 from ember import *
-from features_extended import *
+from .features_extended import *
 from sklearn.model_selection import GridSearchCV, TimeSeriesSplit, cross_validate
 from sklearn.metrics import accuracy_score, roc_auc_score, roc_curve, confusion_matrix, make_scorer, average_precision_score
 
@@ -91,6 +91,7 @@ class Boosting(object):
             df = pd.DataFrame({'time (seconds)': np.linspace(0, len(self.memmetrics) * .1, len(self.memmetrics)),
                                f'Memory consumption {stage} (in MB)': self.memmetrics})
             df.to_csv('memory_training.csv', index=False)
+            self._mlflow.log_metric('peak memory usage in (MB)', df[f'Memory consumption {stage} (in MB)'].max())
             self._mlflow.log_artifact('memory_training.csv')
             df = df.set_index(['time (seconds)'])
             fig = df.plot.line()

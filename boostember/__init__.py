@@ -21,15 +21,16 @@ patch_sklearn()
 
 class Boosting(object):
 
-    def __init__(self, session, experiment='Demo', booster='lgbm', dataset='ember2018', features=None, n_jobs=None, min_features=20, url=None, configpath='config/fyp.json'):
+    def __init__(self, session, experiment='Demo', booster='lgbm', dataset='ember2018', features=None, n_jobs=0, min_features=20, url=None, configpath='config/fyp.json'):
         import mlflow, ember
         self.startsessiontime, self.memmetrics, self.model = None, None, None
+        self.session = session
         self.experiment = experiment
         self._ember = ember
         self._mlflow = mlflow
         self.booster = booster
         self.min_features = min_features
-        self.n_jobs = n_jobs
+        self.n_jobs = int(n_jobs)
         self.max_fpr = [0.01, 0.01]
         self.projectpath = os.path.dirname(os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentframe()))))
         self.logger = self.create_logsession(session)
@@ -139,28 +140,30 @@ class Boosting(object):
             self._mlflow.xgboost.autolog()
             self.model = xgb.XGBClassifier(booster='dart', objective="binary:logistic", n_jobs=self.n_jobs)
         elif self.booster == 'cb':
-            self.model = cb.CatBoostClassifier(boosting_type='ordered', n_jobs=self.n_jobs)
+            self.model = cb.CatBoostClassifier(boosting_type='ordered', thread_count=self.n_jobs)
         self.model.fit(self.X_train, self.y_train)
 
     def cv_execution(self, n=5, copy=True):
         for cv, (train_ix, test_ix) in enumerate(TimeSeriesSplit(n_split=n).split(self.X_train)):
-            cvmodel = deepcopy(self.model) if copy else self.model
-            cvmodel.fit(self.X_train[train_ix], self.y_train[train_ix])
-            self.y_test_pred = self.cvmodel.predict(self.X_test)
-            self.params(cvmodel, stage=f'{cv}')
-            self.metrics(cvmodel, stage=f'{cv}')
-            self.save_model(cvmodel)
+            with self._mlflow.start_run(run_name=f'cross_validation_{cv}', nested=True) as child_run:
+                cvmodel = deepcopy(self.model) if copy else self.model
+                cvmodel.fit(self.X_train[train_ix], self.y_train[train_ix])
+                self.y_test_pred = cvmodel.predict(self.X_test)
+                self.params(cvmodel, stage=f'{cv}')
+                self.metrics(cvmodel, stage=f'{cv}')
+                self.save_model(cvmodel)
 
     def main(self, cv=True, n=3):
         self.startsessiontime = time.time()
-        self.memmetrics = memory_usage(self.train_execution)
-        self.y_test_pred = self.model.predict(self.X_test)
-        self.params(self.model, stage=f'main')
-        self.metrics(self.model, stage=f'main')
-        self.save_model(self.model)
-        if cv:
-            self.cv_execution(n)
-        self._mlflow.log_metric('session_time', time.time()-self.startsessiontime)
+        with self._mlflow.start_run(run_name=f'[main]_{self.session}') as run:
+            self.memmetrics = memory_usage(self.train_execution)
+            self.y_test_pred = self.model.predict(self.X_test)
+            self.params(self.model, stage=f'main')
+            self.metrics(self.model, stage=f'main')
+            self.save_model(self.model)
+            if cv:
+                self.cv_execution(n)
+            self._mlflow.log_metric('session_time', time.time()-self.startsessiontime)
 
 
 

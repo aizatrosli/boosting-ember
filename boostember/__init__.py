@@ -11,6 +11,7 @@ import catboost as cb
 
 from ember import *
 from .features_extended import *
+from .utlis import *
 from sklearn.model_selection import GridSearchCV, TimeSeriesSplit, cross_validate
 from sklearn.metrics import accuracy_score, roc_auc_score, roc_curve, confusion_matrix, make_scorer, average_precision_score
 
@@ -20,14 +21,16 @@ patch_sklearn()
 
 class Boosting(object):
 
-    def __init__(self, session, booster='lgbm', dataset='ember2018', features=None, min_features=20, url=None, configpath='config/fyp.json'):
+    def __init__(self, session, experiment='Demo', booster='lgbm', dataset='ember2018', features=None, n_jobs=None, min_features=20, url=None, configpath='config/fyp.json'):
         import mlflow, ember
         self.startsessiontime, self.memmetrics, self.model = None, None, None
+        self.experiment = experiment
         self._ember = ember
         self._mlflow = mlflow
         self.booster = booster
         self.min_features = min_features
-
+        self.n_jobs = n_jobs
+        self.max_fpr = [0.01, 0.01]
         self.projectpath = os.path.dirname(os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentframe()))))
         self.logger = self.create_logsession(session)
         self.config = self.load_config(os.path.join(self.projectpath, configpath))
@@ -36,6 +39,7 @@ class Boosting(object):
         else:
             self.setup_mlflow(url)
         self.X_train, self.y_train, self.X_test, self.y_test = self.load_data(dataset)
+        self.y_train_pred, self.y_test_pred = None, None
         self.features = emberfeatures().features
         if features is not None and isinstance(features, list) and len(self.features) == len(self.X_train.shape[1]):
             features_ix = [self.features.index(x) for i,x in enumerate(features)]
@@ -57,6 +61,8 @@ class Boosting(object):
         with open(file, 'w') as fp:
             json.dump(data['gcloud'], fp)
         os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = file
+        self._mlflow.set_tracking_uri(self.config['tracking_uri'])
+        self._mlflow.set_experiment(self.experiment)
 
 
     def create_logsession(self, session='New'):
@@ -79,6 +85,16 @@ class Boosting(object):
         self.stage = [stage] if stage else []
         self._mlflow.log_metric(self.keyname('fit_time'), time.time()-self.startsessiontime)
         self._mlflow.sklearn.eval_and_log_metrics(model=estimator, X=self.X_test, y_true=self.y_test, prefix=f'{stage}_')
+        if self.y_test_pred is not None:
+            for maxfpr in self.max_fpr:
+                thresh, fpr = get_threshold(self.y_test, self.y_test_pred, maxfpr)
+                fnr = get_fnr(self.y_test, self.y_test_pred, thresh, 1)
+                self._mlflow.log_metric(self.keyname(f'roc_auc_score_{maxfpr * 100:.4f}%'), roc_auc_score(self.y_test, self.y_test_pred, max_fpr=maxfpr))
+                self._mlflow.log_metric(self.keyname(f'threshold_{maxfpr * 100:.4f}%'), maxfpr)
+                self._mlflow.log_metric(self.keyname(f'fpr_{maxfpr * 100:.4f}%'), fpr * 100)
+                self._mlflow.log_metric(self.keyname(f'fnr_{maxfpr * 100:.4f}%'), fnr * 100)
+                self._mlflow.log_metric(self.keyname(f'detection_rate_{maxfpr * 100:.4f}%'), fnr * 100)
+                plot_roc(self.y_test, self.y_test_pred, fpr, fnr)
         if self.min_features:
             fi_df = pd.DataFrame(sorted(zip(estimator.feature_importances_, self.features)), columns=['Value', 'Features'])
             fi_df = fi_df.sort_values(by='Value', ascending=False)
@@ -100,7 +116,7 @@ class Boosting(object):
     def keyname(self, name):
         return '_'.join(self.stage + [name])
 
-    def load_data(self,datasetpath):
+    def load_data(self, datasetpath):
         if not os.path.exists(datasetpath):
             raise FileNotFoundError("Make sure dataset has been converted!")
         return self._ember.read_vectorized_features(datasetpath)
@@ -114,37 +130,37 @@ class Boosting(object):
         elif self.booster == 'cb':
             self._mlflow.catboost.log_model(estimator, 'model')
 
-    def train_execution(self, params):
+    def train_execution(self):
         self._mlflow.sklearn.autolog()
         if self.booster == 'lgbm':
             self._mlflow.lightgbm.autolog()
-            self.model = lgb.LGBMClassifier()
+            self.model = lgb.LGBMClassifier(boosting_type='gbdt', objective='binary', n_jobs=self.n_jobs)
         elif self.booster == 'xgb':
             self._mlflow.xgboost.autolog()
-            self.model = xgb.XGBClassifier()
+            self.model = xgb.XGBClassifier(booster='dart', objective="binary:logistic", n_jobs=self.n_jobs)
         elif self.booster == 'cb':
-            self.model = cb.CatBoostClassifier()
+            self.model = cb.CatBoostClassifier(boosting_type='ordered', n_jobs=self.n_jobs)
         self.model.fit(self.X_train, self.y_train)
 
     def cv_execution(self, n=5, copy=True):
         for cv, (train_ix, test_ix) in enumerate(TimeSeriesSplit(n_split=n).split(self.X_train)):
             cvmodel = deepcopy(self.model) if copy else self.model
             cvmodel.fit(self.X_train[train_ix], self.y_train[train_ix])
+            self.y_test_pred = self.cvmodel.predict(self.X_test)
             self.params(cvmodel, stage=f'{cv}')
             self.metrics(cvmodel, stage=f'{cv}')
             self.save_model(cvmodel)
 
-
-
-
-
     def main(self, cv=True, n=3):
-
         self.startsessiontime = time.time()
-        self.memmetrics = memory_usage(self.train_execution, (params,))
+        self.memmetrics = memory_usage(self.train_execution)
+        self.y_test_pred = self.model.predict(self.X_test)
+        self.params(self.model, stage=f'main')
+        self.metrics(self.model, stage=f'main')
         self.save_model(self.model)
         if cv:
             self.cv_execution(n)
+        self._mlflow.log_metric('session_time', time.time()-self.startsessiontime)
 
 
 
@@ -323,7 +339,6 @@ def train_model_extended(data_dir, algo="lightgbm", params={}, feature_version=2
         import xgboost as xb
         from xgboost import DMatrix
         return xb.train(params, xb.DMatrix(X_train[train_rows], y_train[train_rows]))
-    return lgbm_model
 
 '''
 data_dir = '/analytics/playground/aizat/ember/dataset/ember2018'

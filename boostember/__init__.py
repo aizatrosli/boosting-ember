@@ -128,9 +128,9 @@ class Boosting(object):
         if self.shuffle:
             self.X_train, self.y_train = shuffle(self.X_train, self.y_train, random_state=32)
         delunknown = (self.y_train != -1)
-        self.X_train = self.X_train[delunknown]
+        self.X_train, self.y_train = self.X_train[delunknown], self.y_train[delunknown]
         delunknown = (self.y_test != -1)
-        self.X_test = self.X_test[delunknown]
+        self.X_test, self.y_test = self.X_test[delunknown], self.y_test[delunknown]
         return self.X_train, self.y_train, self.X_test, self.y_test
 
     def save_model(self, estimator):

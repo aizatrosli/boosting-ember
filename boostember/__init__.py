@@ -65,7 +65,6 @@ class Boosting(object):
         self._mlflow.set_tracking_uri(self.config['tracking_uri'])
         self._mlflow.set_experiment(self.experiment)
 
-
     def create_logsession(self, session='New'):
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel(logging.DEBUG)
@@ -80,7 +79,7 @@ class Boosting(object):
         self.stage = [stage] if stage else []
         params = estimator.get_all_params() if self.booster == 'cb' else estimator.get_params()
         self._mlflow.log_params(params)
-
+        self._mlflow.log_params(self.configrun)
 
     def metrics(self, estimator, stage=''):
         self.stage = [stage] if stage else []
@@ -90,11 +89,11 @@ class Boosting(object):
             for maxfpr in self.max_fpr:
                 thresh, fpr = get_threshold(self.y_test, self.y_test_pred, maxfpr)
                 fnr = get_fnr(self.y_test, self.y_test_pred, thresh, 1)
-                self._mlflow.log_metric(self.keyname(f'roc_auc_score_{maxfpr * 100:.4f}%'), roc_auc_score(self.y_test, self.y_test_pred, max_fpr=maxfpr))
-                self._mlflow.log_metric(self.keyname(f'threshold_{maxfpr * 100:.4f}%'), maxfpr)
-                self._mlflow.log_metric(self.keyname(f'fpr_{maxfpr * 100:.4f}%'), fpr * 100)
-                self._mlflow.log_metric(self.keyname(f'fnr_{maxfpr * 100:.4f}%'), fnr * 100)
-                self._mlflow.log_metric(self.keyname(f'detection_rate_{maxfpr * 100:.4f}%'), fnr * 100)
+                self._mlflow.log_metric(self.keyname(f'roc_auc_score_{maxfpr * 100:.4f}'), roc_auc_score(self.y_test, self.y_test_pred, max_fpr=maxfpr))
+                self._mlflow.log_metric(self.keyname(f'threshold_{maxfpr * 100:.4f}'), maxfpr)
+                self._mlflow.log_metric(self.keyname(f'fpr_{maxfpr * 100:.4f}'), fpr * 100)
+                self._mlflow.log_metric(self.keyname(f'fnr_{maxfpr * 100:.4f}'), fnr * 100)
+                self._mlflow.log_metric(self.keyname(f'detection_rate_{maxfpr * 100:.4f}'), fnr * 100)
                 plot_roc(self.y_test, self.y_test_pred, fpr, fnr)
         if self.min_features:
             fi_df = pd.DataFrame(sorted(zip(estimator.feature_importances_, self.features)), columns=['Value', 'Features'])
@@ -108,7 +107,7 @@ class Boosting(object):
             df = pd.DataFrame({'time (seconds)': np.linspace(0, len(self.memmetrics) * .1, len(self.memmetrics)),
                                f'Memory consumption {stage} (in MB)': self.memmetrics})
             df.to_csv('memory_training.csv', index=False)
-            self._mlflow.log_metric('peak memory usage in (MB)', df[f'Memory consumption {stage} (in MB)'].max())
+            self._mlflow.log_metric('peak_memory_usage in MB', df[f'Memory consumption {stage} (in MB)'].max())
             self._mlflow.log_artifact('memory_training.csv')
             df = df.set_index(['time (seconds)'])
             fig = df.plot.line()
@@ -144,7 +143,7 @@ class Boosting(object):
         self.model.fit(self.X_train, self.y_train)
 
     def cv_execution(self, n=5, copy=True):
-        for cv, (train_ix, test_ix) in enumerate(TimeSeriesSplit(n_split=n).split(self.X_train)):
+        for cv, (train_ix, test_ix) in enumerate(TimeSeriesSplit(n_splits=n).split(self.X_train)):
             with self._mlflow.start_run(run_name=f'cross_validation_{cv}', nested=True) as child_run:
                 cvmodel = deepcopy(self.model) if copy else self.model
                 cvmodel.fit(self.X_train[train_ix], self.y_train[train_ix])
@@ -153,9 +152,22 @@ class Boosting(object):
                 self.metrics(cvmodel, stage=f'{cv}')
                 self.save_model(cvmodel)
 
+    def config_params(self, n):
+        self.configrun = {
+            'session': self.session,
+            'experiment': self.experiment,
+            'booster': self.booster,
+            'cross_validation': n,
+            'min_features': self.min_features,
+        }
+        if features is not None:
+            self.configrun['features'] = ','.join(self.features)
+        return self.configrun
+
     def main(self, cv=True, n=3):
         self.startsessiontime = time.time()
         with self._mlflow.start_run(run_name=f'[main]_{self.session}') as run:
+            self.config_params(n)
             self.memmetrics = memory_usage(self.train_execution)
             self.y_test_pred = self.model.predict(self.X_test)
             self.params(self.model, stage=f'main')

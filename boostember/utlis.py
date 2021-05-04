@@ -39,5 +39,4 @@ def plot_roc(y_true, y_pred, fpr, fnr):
     plt.xlabel("False positive rate")
     plt.ylabel("True positive rate")
     _ = plt.title("Ember Model ROC Curve")
-    print(type(_), dir(_))
-    return _
+    return _.figure

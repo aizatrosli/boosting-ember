@@ -1,13 +1,12 @@
-import os,sys,time,json,tqdm
+import os,sys,time,json,tqdm,gc,joblib
 import numpy as np
 import pandas as pd
 import lightgbm as lgb
 import multiprocessing
-import logging, inspect
+import logging, inspect, ember
 from ember.features import *
-from sklearn.model_selection import GridSearchCV
-from sklearn.model_selection import TimeSeriesSplit
-from sklearn.metrics import (roc_auc_score, make_scorer)
+from sklearn.model_selection import GridSearchCV, TimeSeriesSplit, cross_validate
+from sklearn.metrics import roc_auc_score, make_scorer, roc_curve, confusion_matrix, average_precision_score, accuracy_score
 
 
 logger = logging.getLogger(__name__)
@@ -27,183 +26,53 @@ logger.critical('Fatal error. Cannot continue')
 '''
 
 
-def autolog(message):
-    "Automatically log the current function details."
-    # Get the previous frame in the stack, otherwise it would
-    # be this function!!!
-    func = inspect.currentframe().f_back.f_code
-    # Dump the message + the name of this function to the log.
-    logger.debug("%s: %s in %s:%i" % (
-        message,
-        func.co_name,
-        func.co_filename,
-        func.co_firstlineno
-    ))
+def scorecheck():
+    '''
+    Scoring methodology return values as dictionary
+    eg.
+    scoring = {'AUC': 'roc_auc', 'Accuracy': make_scorer(accuracy_score)}
+    :return:
+    '''
+    return {'roc_auc': make_scorer(roc_auc_score, max_fpr=5e-3),
+            'precision': make_scorer(average_precision_score),
+            'accuracy': make_scorer(accuracy_score)}
 
 
-def raw_feature_iterator(file_paths):
-    """
-    Yield raw feature strings from the inputed file paths
-    """
-    i = 0
-    for path in file_paths:
-        with open(path, "r") as fin:
-            for line in fin:
-                i += 1
-                autolog('No.{} "{}" {}'.format(i, line, path))
-                yield line
+def generic_crossvalidation(model, X, y, nsplit=3):
+    '''
+
+    explaination:
+    Multimetric scoring can either be specified as a list of strings of predefined scores names or a dict mapping the
+    scorer name to the scorer function and/or the predefined scorer name(s). See Using multiple metric evaluation for
+    more details. When specifying multiple metrics, the refit parameter must be set to the metric (string) for which
+    the *best_params_* will be found and used to build the best_estimator_ on the whole dataset. If the search should not
+    be refit, set refit=False. Leaving refit to the default value None will result in an error when using multiple metrics.
+    :return:
+    '''
+
+    cv = TimeSeriesSplit(n_splits=nsplit).split(X)
+    return cross_validate(model, X, y, scoring=scorecheck(), cv=cv, n_jobs=multiprocessing.cpu_count()/4, verbose=10)
 
 
-def vectorize(irow, raw_features_string, X_path, y_path, extractor, nrows):
-    """
-    Vectorize a single sample of raw features and write to a large numpy file
-    """
-    raw_features = json.loads(raw_features_string)
-    feature_vector = extractor.process_raw_features(raw_features)
-    autolog('{}_{}')
-
-    y = np.memmap(y_path, dtype=np.float32, mode="r+", shape=nrows)
-    y[irow] = raw_features["label"]
-
-    X = np.memmap(X_path, dtype=np.float32, mode="r+", shape=(nrows, extractor.dim))
-    X[irow] = feature_vector
+def mlflowsetup(url, file='mlflow.json'):
+    import requests, pickle, os, json
+    from urllib.parse import urlparse
+    data = pickle.loads(requests.get(url).content) if urlparse(url).scheme else pickle.loads(open(url, 'rb').read())
+    for key,val in data.items():
+        if type(val) is str:
+            os.environ[key]=val
+    with open(file, 'w') as fp:
+        json.dump(data['gcloud'], fp)
+    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = file
+    return True
 
 
-def vectorize_unpack(args):
-    """
-    Pass through function for unpacking vectorize arguments
-    """
-    return vectorize(*args)
-
-
-def vectorize_subset(X_path, y_path, raw_feature_paths, extractor, nrows):
-    """
-    Vectorize a subset of data and write it to disk
-    """
-    # Create space on disk to write features to
-    X = np.memmap(X_path, dtype=np.float32, mode="w+", shape=(nrows, extractor.dim))
-    y = np.memmap(y_path, dtype=np.float32, mode="w+", shape=nrows)
-    del X, y
-
-    # Distribute the vectorization work
-    pool = multiprocessing.Pool()
-    argument_iterator = ((irow, raw_features_string, X_path, y_path, extractor, nrows)
-                         for irow, raw_features_string in enumerate(raw_feature_iterator(raw_feature_paths)))
-    autolog('{}\n{}'.format(type(argument_iterator), argument_iterator))
-    for _ in tqdm.tqdm(pool.imap_unordered(vectorize_unpack, argument_iterator), total=nrows):
-        autolog(_)
-        pass
-
-
-def create_vectorized_features(data_dir, feature_version=2):
-    """
-    Create feature vectors from raw features and write them to disk
-    """
-    extractor = PEFeatureExtractor(feature_version)
-
-    print("Vectorizing training set")
-    X_path = os.path.join(data_dir, "X_train.dat")
-    y_path = os.path.join(data_dir, "y_train.dat")
-    raw_feature_paths = [os.path.join(data_dir, "train_features_{}.jsonl".format(i)) for i in range(6)]
-    nrows = sum([1 for fp in raw_feature_paths for line in open(fp)])
-    vectorize_subset(X_path, y_path, raw_feature_paths, extractor, nrows)
-
-    print("Vectorizing test set")
-    X_path = os.path.join(data_dir, "X_test.dat")
-    y_path = os.path.join(data_dir, "y_test.dat")
-    raw_feature_paths = [os.path.join(data_dir, "test_features.jsonl")]
-    nrows = sum([1 for fp in raw_feature_paths for line in open(fp)])
-    vectorize_subset(X_path, y_path, raw_feature_paths, extractor, nrows)
-
-
-def read_vectorized_features(data_dir, subset=None, feature_version=2):
-    """
-    Read vectorized features into memory mapped numpy arrays
-    """
-    if subset is not None and subset not in ["train", "test"]:
-        return None
-
-    extractor = PEFeatureExtractor(feature_version)
-    ndim = extractor.dim
-    X_train = None
-    y_train = None
-    X_test = None
-    y_test = None
-
-    if subset is None or subset == "train":
-        X_train_path = os.path.join(data_dir, "X_train.dat")
-        y_train_path = os.path.join(data_dir, "y_train.dat")
-        y_train = np.memmap(y_train_path, dtype=np.float32, mode="r")
-        N = y_train.shape[0]
-        X_train = np.memmap(X_train_path, dtype=np.float32, mode="r", shape=(N, ndim))
-        if subset == "train":
-            return X_train, y_train
-
-    if subset is None or subset == "test":
-        X_test_path = os.path.join(data_dir, "X_test.dat")
-        y_test_path = os.path.join(data_dir, "y_test.dat")
-        y_test = np.memmap(y_test_path, dtype=np.float32, mode="r")
-        N = y_test.shape[0]
-        X_test = np.memmap(X_test_path, dtype=np.float32, mode="r", shape=(N, ndim))
-        if subset == "test":
-            return X_test, y_test
-
-    return X_train, y_train, X_test, y_test
-
-
-def read_metadata_record(raw_features_string):
-    """
-    Decode a raw features string and return the metadata fields
-    """
-    all_data = json.loads(raw_features_string)
-    metadata_keys = {"sha256", "appeared", "label", "avclass"}
-    return {k: all_data[k] for k in all_data.keys() & metadata_keys}
-
-
-def create_metadata(data_dir):
-    """
-    Write metadata to a csv file and return its dataframe
-    """
-    pool = multiprocessing.Pool()
-
-    train_feature_paths = [os.path.join(data_dir, "train_features_{}.jsonl".format(i)) for i in range(6)]
-    train_records = list(pool.imap(read_metadata_record, raw_feature_iterator(train_feature_paths)))
-
-    metadata_keys = ["sha256", "appeared", "label", "avclass"]
-    ordered_metadata_keys = [k for k in metadata_keys if k in train_records[0].keys()]
-
-    train_metadf = pd.DataFrame(train_records)[ordered_metadata_keys]
-    train_metadf.to_csv(os.path.join(data_dir, "train_metadata.csv"))
-
-    train_records = [dict(record, **{"subset": "train"}) for record in train_records]
-
-    test_feature_paths = [os.path.join(data_dir, "test_features.jsonl")]
-    test_records = list(pool.imap(read_metadata_record, raw_feature_iterator(test_feature_paths)))
-
-    test_metadf = pd.DataFrame(test_records)[ordered_metadata_keys]
-    test_metadf.to_csv(os.path.join(data_dir, "test_metadata.csv"))
-
-    test_records = [dict(record, **{"subset": "test"}) for record in test_records]
-
-    all_metadata_keys = ordered_metadata_keys + ["subset"]
-    metadf = pd.DataFrame(train_records + test_records)[all_metadata_keys]
-    metadf.to_csv(os.path.join(data_dir, "metadata.csv"))
-    return metadf
-
-
-def read_metadata(data_dir):
-    """
-    Read an already created metadata file and return its dataframe
-    """
-    return pd.read_csv(os.path.join(data_dir, "metadata.csv"), index_col=0)
-
-
-def optimize_model(data_dir):
+def optimize_model_best(data_dir):
     """
     Run a grid search to find the best LightGBM parameters
     """
     # Read data
-    X_train, y_train = read_vectorized_features(data_dir, subset="train")
+    X_train, y_train = ember.read_vectorized_features(data_dir, subset="train")
 
     # Filter unlabeled data
     train_rows = (y_train != -1)
@@ -218,15 +87,15 @@ def optimize_model(data_dir):
 
     # define search grid
     param_grid = {
-        'boosting_type': ['gbdt'],
+        'boosting_type': ['goss','gdbt','dart'],
         'objective': ['binary'],
-        'num_iterations': [500, 1000],
-        'learning_rate': [0.005, 0.05],
-        'num_leaves': [512, 1024, 2048],
-        'feature_fraction': [0.5, 0.8, 1.0],
-        'bagging_fraction': [0.5, 0.8, 1.0]
+        'num_iterations': [500, 1000, 1500],
+        'learning_rate': [0.005, 0.05, 0.5],
+        'num_leaves': [512, 1024, 2048, 4096],
+        'feature_fraction': [0.5, 0.8, 1.0, 1.3],
+        'bagging_fraction': [0.5, 0.8, 1.0, 1.3]
     }
-    model = lgb.LGBMClassifier(boosting_type="gbdt", n_jobs=-1, silent=True)
+    model = lgb.LGBMClassifier(boosting_type="goss", n_jobs=-1, silent=True)
 
     # each row in X_train appears in chronological order of "appeared"
     # so this works for progrssive time series splitting
@@ -234,34 +103,100 @@ def optimize_model(data_dir):
 
     grid = GridSearchCV(estimator=model, cv=progressive_cv, param_grid=param_grid, scoring=score, n_jobs=1, verbose=3)
     grid.fit(X_train, y_train)
+    joblib.dump(grid, 'lgb_{}_{}.pkl'.format(os.path.split(data_dir)[-1],time.strftime("%Y%m%d-%H%M%S")))
 
     return grid.best_params_
 
 
-def train_model(data_dir, params={}, feature_version=2):
-    """
-    Train the LightGBM model from the EMBER dataset from the vectorized features
-    """
-    # update params
-    params.update({"application": "binary"})
+def yield_artifacts(run_id, path=None):
+    import mlflow
+    """Yield all artifacts in the specified run"""
+    client = mlflow.tracking.MlflowClient()
+    for item in client.list_artifacts(run_id, path):
+        if item.is_dir:
+            yield from yield_artifacts(run_id, item.path)
+        else:
+            yield item.path
 
+
+def fetch_logged_data(run_id):
+    import mlflow
+    """Fetch params, metrics, tags, and artifacts in the specified run"""
+    client = mlflow.tracking.MlflowClient()
+    data = client.get_run(run_id).data
+    # Exclude system tags: https://www.mlflow.org/docs/latest/tracking.html#system-tags
+    tags = {k: v for k, v in data.tags.items() if not k.startswith("mlflow.")}
+    artifacts = list(yield_artifacts(run_id))
+    return {
+        "params": data.params,
+        "metrics": data.metrics,
+        "tags": tags,
+        "artifacts": artifacts,
+    }
+
+
+def get_dataset(data_dir, feature_version=2):
+    X_train, y_train = ember.read_vectorized_features(data_dir, "train", feature_version)
+
+
+def read_data_record(raw_features_string):
+    """
+    Decode a raw features string and return the metadata fields
+    """
+    all_data = json.loads(raw_features_string)
+    return {k: all_data[k] for k in all_data.keys()}
+
+
+def create_resize_data(data_dir, size=100000, cache=False, random=False):
+    """
+    Write metadata to a csv file and return its dataframe
+    """
+    pool = multiprocessing.Pool()
+
+    train_feature_paths = [os.path.join(data_dir, "train_features_{}.jsonl".format(i)) for i in range(6)]
+    train_metadf = pd.DataFrame(list(pool.imap(read_data_record, ember.raw_feature_iterator(train_feature_paths))))
+    train_metadfsize = pd.concat(
+        [train_metadf[train_metadf['label'] == 0].head(size), train_metadf[train_metadf['label'] == 1].head(size),
+         train_metadf[train_metadf['label'] == -1].head(size)], ignore_index=True) if not random else pd.concat(
+        [train_metadf[train_metadf['label'] == 0].sample(size), train_metadf[train_metadf['label'] == 1].sample(size),
+         train_metadf[train_metadf['label'] == -1].sample(size)], ignore_index=True)
+    logging.info(f'Train original size : {train_metadf.shape} | Train resize size : {train_metadfsize.shape}')
+    if cache:
+        train_metadf.to_pickle(os.path.join(data_dir, "train.data"), compression=None)
+    del train_metadf
+    train_metadfsize.to_pickle(os.path.join(data_dir, f"train_{size * 3}.data"), compression=None)
+    del train_metadfsize
+    gc.collect()
+
+    test_feature_paths = [os.path.join(data_dir, "test_features.jsonl")]
+    test_metadf = pd.DataFrame(list(pool.imap(read_data_record, ember.raw_feature_iterator(test_feature_paths))))
+    test_metadf.to_pickle(os.path.join(data_dir, "test.data"), compression=None)
+    logging.info(f'Test size : {test_metadf.shape}')
+    del test_metadf
+    gc.collect()
+
+    return data_dir
+
+
+def train_model_extended(data_dir, algo="lightgbm", params={}, feature_version=2):
+    """
+    Train the model from the EMBER dataset from the vectorized features.
+    Extension from train_model()
+    """
     # Read data
-    X_train, y_train = read_vectorized_features(data_dir, "train", feature_version)
-
+    X_train, y_train = ember.read_vectorized_features(data_dir, "train", feature_version)
     # Filter unlabeled data
     train_rows = (y_train != -1)
-
     # Train
-    lgbm_dataset = lgb.Dataset(X_train[train_rows], y_train[train_rows])
-    lgbm_model = lgb.train(params, lgbm_dataset)
+    if algo == "lightgbm":
+        import lightgbm as lgb
+        return lgb.train(params, lgb.Dataset(X_train[train_rows], y_train[train_rows]))
+    elif algo == "catboost":
+        import catboost as cat
+        from catboost import Pool
+        return cat.train(params, cat.Pool(X_train[train_rows], y_train[train_rows]))
+    elif algo == 'xgboost':
+        import xgboost as xb
+        from xgboost import DMatrix
+        return xb.train(params, xb.DMatrix(X_train[train_rows], y_train[train_rows]))
 
-    return lgbm_model
-
-
-def predict_sample(lgbm_model, file_data, feature_version=2):
-    """
-    Predict a PE file with an LightGBM model
-    """
-    extractor = PEFeatureExtractor(feature_version)
-    features = np.array(extractor.feature_vector(file_data), dtype=np.float32)
-    return lgbm_model.predict([features])[0]

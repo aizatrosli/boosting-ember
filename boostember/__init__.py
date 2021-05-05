@@ -24,6 +24,7 @@ class Boosting(object):
 
     def __init__(self, session, experiment='Demo', booster='lgbm', dataset='ember2018', features=None, shuffle=False, n_jobs=0, min_features=20, url=None, configpath='config/fyp.json'):
         import mlflow, ember
+        self.boostercol = {'cb': 'catbooster', 'lgbm': 'lightgbm', 'xgb': 'xgboost'}
         self.startsessiontime, self.memmetrics, self.model = None, None, None
         self.shuffle = shuffle
         self.session = session
@@ -77,7 +78,7 @@ class Boosting(object):
         self.logger.addHandler(file_handler)
         return self.logger
 
-    def params(self, estimator, stage=''):
+    def params(self, estimator, run, stage=''):
         self.stage = [stage] if stage else []
         params = estimator.get_all_params() if self.booster == 'cb' else estimator.get_params()
         self._mlflow.log_params(params)
@@ -86,10 +87,10 @@ class Boosting(object):
             fp.write('\n'.join(self.features))
         self._mlflow.log_artifact('features_list.txt')
 
-    def metrics(self, estimator, stage=''):
+    def metrics(self, estimator, run, stage=''):
         self.stage = [stage] if stage else []
         self._mlflow.log_metric(self.keyname('fit_time'), time.time()-self.startsessiontime)
-        self._mlflow.sklearn.eval_and_log_metrics(model=estimator, X=self.X_test, y_true=self.y_test, prefix=f'{stage}_')
+        #self._mlflow.sklearn.eval_and_log_metrics(model=estimator, X=self.X_test, y_true=self.y_test, prefix=f'{stage}_')
         if self.y_test_pred is not None:
             for maxfpr in self.max_fpr:
                 thresh, fpr = get_threshold(self.y_test, self.y_test_pred, maxfpr)
@@ -117,9 +118,15 @@ class Boosting(object):
             df = df.set_index(['time (seconds)'])
             fig = df.plot.line()
             self._mlflow.log_figure(fig.figure, 'memory_training.png')
-        df = pd.DataFrame({'X_test': self.X_test, 'y_true': self.y_test, 'y_pred': self.y_test_pred})
+        df = pd.DataFrame({'y_true': self.y_test, 'y_pred': self.y_test_pred})
         df.to_csv(f'testing_dataset_{stage}.csv', index=False)
         self._mlflow.log_artifact(f'testing_dataset_{stage}.csv')
+        if self.booster == 'cb':
+            self._mlflow.log_artifacts('catboost_info', 'catboost_info')
+            self._mlflow.sklearn.utils._log_estimator_content(estimator=estimator, X=self.X_test, y_true=self.y_test,
+                                                              prefix=f'{stage}_', run_id=run.info.run_id, sample_weight=None)
+        else:
+            self._mlflow.sklearn.eval_and_log_metrics(model=estimator, X=self.X_test, y_true=self.y_test, prefix=f'{stage}_')
 
     def keyname(self, name):
         return '_'.join(self.stage + [name])
@@ -149,7 +156,7 @@ class Boosting(object):
         self._mlflow.sklearn.autolog()
         if self.booster == 'lgbm':
             self._mlflow.lightgbm.autolog()
-            self.model = lgb.LGBMClassifier(boosting_type='gbdt', objective='binary', n_jobs=self.n_jobs)
+            self.model = lgb.LGBMClassifier(boosting_type='goss', objective='binary', n_jobs=self.n_jobs)
         elif self.booster == 'xgb':
             self._mlflow.xgboost.autolog()
             self.model = xgb.XGBClassifier(booster='dart', objective="binary:logistic", n_jobs=self.n_jobs)
@@ -163,15 +170,15 @@ class Boosting(object):
                 cvmodel = deepcopy(self.model) if copy else self.model
                 cvmodel.fit(self.X_train[train_ix], self.y_train[train_ix])
                 self.y_test_pred = cvmodel.predict(self.X_test)
-                self.params(cvmodel, stage=f'{cv}')
-                self.metrics(cvmodel, stage=f'{cv}')
+                self.params(cvmodel, child_run, stage=f'{cv}')
+                self.metrics(cvmodel, child_run, stage=f'{cv}')
                 self.save_model(cvmodel)
 
     def config_params(self, n):
         self.configrun = {
             'session': self.session,
             'experiment': self.experiment,
-            'booster': self.booster,
+            'booster': self.boostercol[self.booster],
             'cross_validation': n,
             'min_features': self.min_features,
         }
@@ -183,8 +190,8 @@ class Boosting(object):
             self.config_params(n)
             self.memmetrics = memory_usage(self.train_execution)
             self.y_test_pred = self.model.predict(self.X_test)
-            self.params(self.model, stage=f'main')
-            self.metrics(self.model, stage=f'main')
+            self.params(self.model, run, stage=f'main')
+            self.metrics(self.model, run, stage=f'main')
             self.save_model(self.model)
             if cv:
                 self.cv_execution(n)

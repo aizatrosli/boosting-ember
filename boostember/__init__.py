@@ -22,9 +22,9 @@ patch_sklearn()
 
 class Boosting(object):
 
-    def __init__(self, session, experiment='Demo', booster='lgbm', dataset='ember2018', features=None, shuffle=False, n_jobs=0, min_features=20, url=None, configpath='config/fyp.json'):
+    def __init__(self, session, experiment='Demo', booster='lgb', dataset='ember2018', features=None, shuffle=False, n_jobs=0, min_features=20, url=None, configpath='config/fyp.json'):
         import mlflow, ember
-        self.boostercol = {'cb': 'catbooster', 'lgbm': 'lightgbm', 'xgb': 'xgboost'}
+        self.boostercol = {'cb': 'catbooster', 'lgb': 'lightgbm', 'xgb': 'xgboost'}
         self.startsessiontime, self.memmetrics, self.model = None, None, None
         self.shuffle = shuffle
         self.session = session
@@ -145,7 +145,7 @@ class Boosting(object):
 
     def save_model(self, estimator):
         self._mlflow.sklearn.log_model(estimator, 'skmodel')
-        if self.booster == 'lgbm':
+        if self.booster == 'lgb':
             self._mlflow.lightgbm.log_model(estimator.booster_, 'model')
         elif self.booster == 'xgb':
             self._mlflow.lightgbm.log_model(estimator.get_booster(), 'model')
@@ -154,7 +154,7 @@ class Boosting(object):
 
     def train_execution(self):
         self._mlflow.sklearn.autolog()
-        if self.booster == 'lgbm':
+        if self.booster == 'lgb':
             self._mlflow.lightgbm.autolog()
             self.model = lgb.LGBMClassifier(boosting_type='goss', objective='binary', n_jobs=self.n_jobs)
         elif self.booster == 'xgb':
@@ -178,7 +178,7 @@ class Boosting(object):
         self.configrun = {
             'session': self.session,
             'experiment': self.experiment,
-            'booster': self.boostercol[self.booster],
+            'boosting_model': self.boostercol[self.booster],
             'cross_validation': n,
             'min_features': self.min_features,
         }

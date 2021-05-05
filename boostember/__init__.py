@@ -82,6 +82,9 @@ class Boosting(object):
         params = estimator.get_all_params() if self.booster == 'cb' else estimator.get_params()
         self._mlflow.log_params(params)
         self._mlflow.log_params(self.configrun)
+        with open('features_list.txt', 'w') as fp:
+            fp.write('\n'.join(self.features))
+        self._mlflow.log_artifact('features_list.txt')
 
     def metrics(self, estimator, stage=''):
         self.stage = [stage] if stage else []
@@ -152,7 +155,7 @@ class Boosting(object):
             self.model = xgb.XGBClassifier(booster='dart', objective="binary:logistic", n_jobs=self.n_jobs)
         elif self.booster == 'cb':
             self.model = cb.CatBoostClassifier(boosting_type='ordered', thread_count=self.n_jobs)
-        self.model.fit(self.X_train, self.y_train)
+        self.model.fit(self.X_train, self.y_train, verbose=10)
 
     def cv_execution(self, n=5, copy=True):
         for cv, (train_ix, test_ix) in enumerate(TimeSeriesSplit(n_splits=n).split(self.X_train)):
@@ -172,8 +175,6 @@ class Boosting(object):
             'cross_validation': n,
             'min_features': self.min_features,
         }
-        if features is not None:
-            self.configrun['features'] = ','.join(self.features)
         return self.configrun
 
     def main(self, cv=True, n=3):

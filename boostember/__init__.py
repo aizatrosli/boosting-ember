@@ -154,7 +154,7 @@ class Boosting(object):
             self._mlflow.xgboost.autolog()
             self.model = xgb.XGBClassifier(booster='dart', objective="binary:logistic", n_jobs=self.n_jobs)
         elif self.booster == 'cb':
-            self.model = cb.CatBoostClassifier(boosting_type='ordered', thread_count=self.n_jobs)
+            self.model = cb.CatBoostClassifier(boosting_type='Ordered', thread_count=self.n_jobs)
         self.model.fit(self.X_train, self.y_train, verbose=10)
 
     def cv_execution(self, n=5, copy=True):

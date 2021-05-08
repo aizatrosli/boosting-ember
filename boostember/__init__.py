@@ -13,6 +13,7 @@ from ember import *
 from .debug import *
 from .features_extended import *
 from .utlis import *
+import matplotlib.pyplot as plt
 from sklearn.model_selection import GridSearchCV, TimeSeriesSplit, cross_validate
 from sklearn.metrics import accuracy_score, roc_auc_score
 from sklearn.utils import shuffle
@@ -22,7 +23,8 @@ patch_sklearn()
 
 class Boosting(object):
 
-    def __init__(self, session, experiment='Demo', booster='lgb', dataset='ember2018', features=None, shuffle=False, n_jobs=0, min_features=20, url=None, configpath='config/fyp.json'):
+    def __init__(self, session, experiment='Demo', booster='lgb', dataset='ember2018', features=None, shuffle=False,
+                 n_estimator=1000, n_jobs=0, min_features=20, url=None, configpath='config/fyp.json'):
         import mlflow, ember
         self.boostercol = {'cb': 'catbooster', 'lgb': 'lightgbm', 'xgb': 'xgboost'}
         self.startsessiontime, self.memmetrics, self.model = None, None, None
@@ -34,6 +36,7 @@ class Boosting(object):
         self.booster = booster
         self.min_features = min_features
         self.n_jobs = int(n_jobs)
+        self.n_estimator = int(n_estimator)
         self.max_fpr = [0.01, 0.001]
         self.projectpath = os.path.dirname(os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentframe()))))
         self.logger = self.create_logsession(session)
@@ -127,6 +130,7 @@ class Boosting(object):
                                                               prefix=f'{stage}_', run_id=run.info.run_id, sample_weight=None)
         else:
             self._mlflow.sklearn.eval_and_log_metrics(model=estimator, X=self.X_test, y_true=self.y_test, prefix=f'{stage}_')
+        plt.close('all')
 
     def keyname(self, name):
         return '_'.join(self.stage + [name])
@@ -156,12 +160,12 @@ class Boosting(object):
         self._mlflow.sklearn.autolog()
         if self.booster == 'lgb':
             self._mlflow.lightgbm.autolog()
-            self.model = lgb.LGBMClassifier(boosting_type='goss', objective='binary', n_jobs=self.n_jobs)
+            self.model = lgb.LGBMClassifier(boosting_type='goss', objective='binary', n_estimators=self.n_estimator, n_jobs=self.n_jobs, verbose=5)
         elif self.booster == 'xgb':
             self._mlflow.xgboost.autolog()
-            self.model = xgb.XGBClassifier(booster='dart', objective="binary:logistic", n_jobs=self.n_jobs)
+            self.model = xgb.XGBClassifier(booster='dart', objective="binary:logistic", n_estimators=self.n_estimator, n_jobs=self.n_jobs, verbose=5)
         elif self.booster == 'cb':
-            self.model = cb.CatBoostClassifier(boosting_type='Ordered', thread_count=self.n_jobs)
+            self.model = cb.CatBoostClassifier(boosting_type='Ordered', n_estimators=self.n_estimator, thread_count=self.n_jobs, verbose=5)
         self.model.fit(self.X_train, self.y_train, verbose=10)
 
     def cv_execution(self, n=5, copy=True):

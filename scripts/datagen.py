@@ -54,6 +54,7 @@ def generatecollection(xdf):
     odf['coff_characteristics_id'] = [[j for j in range(len(i))] for i in odf['coff_characteristics'].values]
     odf.set_index(['sha256'])
     odf = odf.apply(pd.Series.explode).dropna().reset_index().drop('index', axis=1)
+    odf['coff_characteristics_id'] = odf['sha256'] + "_" + odf['coff_characteristics_id'].astype(str)
     ftdf['coff_characteristics'] = odf.copy()
 
     mdf = ndf.drop(['coff', 'optional'], axis=1).join(
@@ -66,7 +67,8 @@ def generatecollection(xdf):
                                               odf['optional_dll_characteristics'].values]
     odf.set_index(['sha256'])
     odf = odf.apply(pd.Series.explode).dropna().reset_index().drop('index', axis=1)
-    ftdf['optional_dll_characteristics'] = odf.copy()
+    odf['optional_dll_characteristics_id'] = odf['sha256'] + "_" + odf['optional_dll_characteristics_id'].astype(str)
+    ftdf['optional_dll_characteristics_id'] = odf.copy()
 
     ndf = df[['sha256', 'section']]
     ndf = ndf.drop('section', axis=1).join(pd.DataFrame(df['section'].values.tolist(), index=df.index))
@@ -78,12 +80,14 @@ def generatecollection(xdf):
     odf.set_index(['sha256'])
     odf = odf.apply(pd.Series.explode).dropna().reset_index().drop('index', axis=1)
     odf = odf.drop('sections', axis=1).join(pd.DataFrame(odf['sections'].values.tolist()))
+    odf['sections_id'] = odf['sha256'] + "_" + odf['sections_id'].astype(str)
     ftdf['section_sections'] = odf.drop('props', axis=1).copy()
 
     pdf = odf[['sha256', 'sections_id', 'props']].dropna()
     pdf['props_id'] = [[j for j in range(len(i))] for i in pdf['props'].values]
     pdf.set_index(['sha256', 'sections_id'])
     pdf = pdf.apply(pd.Series.explode).dropna().reset_index().drop('index', axis=1)
+    pdf['props_id'] = pdf['sections_id'] + "_" + pdf['props_id'].astype(str)
     ftdf['sections_props'] = pdf.copy()
 
     ndf = df[['sha256', 'imports']]
@@ -92,18 +96,21 @@ def generatecollection(xdf):
     ndf['imports_id'] = [[j for j in range(len(i.keys()))] for i in ndf['imports'].values]
     ndf['imports'] = [i.keys() for i in ndf['imports'].values]
     ndf = ndf.apply(pd.Series.explode).reset_index().drop('index', axis=1)
+    ndf['imports_id'] = ndf['sha256'] + "_" + ndf['imports_id'].astype(str)
     ftdf['imports'] = ndf.drop('imports_api', axis=1).copy()
 
     odf = ndf[['sha256', 'imports_id', 'imports_api']].dropna()
     odf.set_index(['sha256', 'imports_id'])
     odf['imports_api_id'] = [[j for j in range(len(i))] for i in odf['imports_api'].values]
     odf = odf.apply(pd.Series.explode).dropna().reset_index().drop('index', axis=1)
+    odf['imports_api_id'] = odf['imports_id'] + "_" + odf['imports_api_id'].astype(str)
     ftdf['imports_api'] = odf.copy()
 
     ndf = df[['sha256', 'exports']]
     ndf.set_index(['sha256'])
     ndf['exports_id'] = [[j for j in range(len(i))] for i in ndf['exports'].values]
     ndf = ndf.apply(pd.Series.explode).dropna().reset_index().drop('index', axis=1)
+    ndf['exports_id'] = ndf['sha256'] + "_" + ndf['exports_id'].astype(str)
     ftdf['exports'] = ndf.copy()
 
     ndf = df[['sha256', 'datadirectories']]
@@ -112,6 +119,7 @@ def generatecollection(xdf):
     ndf = ndf.apply(pd.Series.explode).dropna().reset_index().drop('index', axis=1)
     ndf = ndf.drop('datadirectories', axis=1).join(
         pd.DataFrame(ndf['datadirectories'].values.tolist(), index=ndf.index))
+    ndf['datadirectories_id'] = ndf['sha256'] + "_" + ndf['datadirectories_id'].astype(str)
     ftdf['datadirectories'] = ndf.copy()
     return ftdf
 

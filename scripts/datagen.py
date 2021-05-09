@@ -126,6 +126,6 @@ def convertdf(data_dir):
 
 
 if __name__ == '__main__':
-    ember2018 = r'E:\OneDrive\OneDrive - Universiti Teknologi Malaysia (UTM)\Master Project\Workspace\dataset\ember2018'
+    ember2018 = r'/home/aizat/OneDrive/Master Project/Workspace/dataset/ember2018'
     joblib.dump(convertdf(ember2018), os.path.join(ember2018, 'ember2018_ft.data'))
 

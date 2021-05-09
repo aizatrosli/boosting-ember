@@ -1,10 +1,10 @@
 import pandas as pd
 import featuretools as ft
-import joblib, time, sys, os
+import joblib, time, sys, os, gc
 
 
 def run():
-    ember2018 = r'E:\OneDrive\OneDrive - Universiti Teknologi Malaysia (UTM)\Master Project\Workspace\dataset\ember2018'
+    ember2018 = r'/home/aizat/OneDrive/Master Project/Workspace/dataset/ember2018'
     dataset = joblib.load(os.path.join(ember2018, 'ember2018_ft.data'))
 
     es = ft.EntitySet(id="ember")
@@ -34,16 +34,26 @@ def run():
                                              es['general']['sha256']))
 
     print(es)
+    gc.enable()
+    del dataset
+    gc.collect()
 
     feature_matrix, feature_defs = ft.dfs(entityset=es,
                                           target_entity='metadata',
-                                          n_jobs=2,
-                                          max_depth=1,
-                                          save_progress=r'E:\OneDrive\OneDrive - Universiti Teknologi Malaysia (UTM)\Master Project\Workspace\dataset\ember2018',
+                                          n_jobs=5,
+                                          max_depth=3,
+                                          chunk_size=1000,
+                                          features_only=False,
+                                          verbose=True,
+                                          save_progress=ember2018,
                                           )
 
+    print(feature_defs, len(feature_defs))
     print(feature_matrix.shape)
     print(feature_matrix)
+    joblib.dump(feature_matrix, os.path.join(ember2018, 'ember2018_ft_gen5.data'))
+    ft.save_features(feature_defs, os.path.join(ember2018, 'ember2018_ft_gen5.json'))
+    
 
 
 if __name__ == '__main__':

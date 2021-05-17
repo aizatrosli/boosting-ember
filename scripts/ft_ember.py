@@ -1,11 +1,13 @@
 import pandas as pd
 import featuretools as ft
-import joblib, time, sys, os, gc
+import joblib, time, sys, os, gc, pydot
 
 
 def run():
     ember2018 = r'/home/aizat/OneDrive/Master Project/Workspace/dataset/ember2018'
-    dataset = joblib.load(os.path.join(ember2018, 'ember2018_ft.data'))
+    dataset = joblib.load(os.path.join(ember2018, 'ember2018_ft_test_raw.data'))
+
+    es = ft.EntitySet(id="ember2018")
 
     es = es.entity_from_dataframe(entity_id="metadata",
                                   dataframe=dataset['metadata'],
@@ -78,11 +80,11 @@ def run():
 
     es = es.add_relationship(ft.Relationship(es['metadata']['sha256'],
                                              es['header_coff']['sha256']))
-    es = es.add_relationship(ft.Relationship(es['header_coff']['sha256'],
+    es = es.add_relationship(ft.Relationship(es['metadata']['sha256'],
                                              es['coff_characteristics']['sha256']))
     es = es.add_relationship(ft.Relationship(es['metadata']['sha256'],
                                              es['header_optional']['sha256']))
-    es = es.add_relationship(ft.Relationship(es['header_optional']['sha256'],
+    es = es.add_relationship(ft.Relationship(es['metadata']['sha256'],
                                              es['optional_dll_characteristics']['sha256']))
 
     es = es.add_relationship(ft.Relationship(es['metadata']['sha256'],
@@ -103,15 +105,19 @@ def run():
                                              es['datadirectories']['sha256']))
 
     print(es)
+    (graph, ) = pydot.graph_from_dot_file(es.plot().save('ember2018_test.dot'))
+    graph.write_svg('ember2018_test.svg')
     gc.enable()
-    del dataset
+    del dataset, graph
     gc.collect()
 
+    features = ft.load_features(os.path.join(ember2018, 'ember2018_ft_gen5.json'))
     feature_matrix, feature_defs = ft.dfs(entityset=es,
                                           target_entity='metadata',
-                                          n_jobs=5,
-                                          max_depth=3,
-                                          chunk_size=1000,
+                                          n_jobs=1,
+                                          max_depth=5,
+                                          chunk_size=10000,
+                                          seed_features=features,
                                           features_only=False,
                                           verbose=True,
                                           save_progress=ember2018,
@@ -120,8 +126,8 @@ def run():
     print(feature_defs, len(feature_defs))
     print(feature_matrix.shape)
     print(feature_matrix)
-    joblib.dump(feature_matrix, os.path.join(ember2018, 'ember2018_ft_gen5.data'))
-    ft.save_features(feature_defs, os.path.join(ember2018, 'ember2018_ft_gen5.json'))
+    joblib.dump(feature_matrix, os.path.join(ember2018, 'ember2018_ft_test_gen5.data'))
+    ft.save_features(feature_defs, os.path.join(ember2018, 'ember2018_ft_test_gen5.json'))
     
 
 

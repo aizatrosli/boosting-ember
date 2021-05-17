@@ -68,7 +68,7 @@ def generatecollection(xdf):
     odf.set_index(['sha256'])
     odf = odf.apply(pd.Series.explode).dropna().reset_index().drop('index', axis=1)
     odf['optional_dll_characteristics_id'] = odf['sha256'] + "_" + odf['optional_dll_characteristics_id'].astype(str)
-    ftdf['optional_dll_characteristics_id'] = odf.copy()
+    ftdf['optional_dll_characteristics'] = odf.copy()
 
     ndf = df[['sha256', 'section']]
     ndf = ndf.drop('section', axis=1).join(pd.DataFrame(df['section'].values.tolist(), index=df.index))
@@ -126,7 +126,8 @@ def generatecollection(xdf):
 
 def convertdf(data_dir):
     pool = multiprocessing.Pool()
-    train_feature_paths = [os.path.join(data_dir, f'train_features_{i}.jsonl') for i in range(6)]
+    #train_feature_paths = [os.path.join(data_dir, f'train_features_{i}.jsonl') for i in range(6)]
+    train_feature_paths = [os.path.join(data_dir, "test_features.jsonl")]
     train_metadf = pd.DataFrame(list(pool.imap(read_data_record, raw_feature_iterator(train_feature_paths))))
     train_metadf = train_metadf[train_metadf['label'] != -1]
     # train_metadf = train_metadf.sample(100000)
@@ -135,5 +136,5 @@ def convertdf(data_dir):
 
 if __name__ == '__main__':
     ember2018 = r'/home/aizat/OneDrive/Master Project/Workspace/dataset/ember2018'
-    joblib.dump(convertdf(ember2018), os.path.join(ember2018, 'ember2018_ft.data'))
+    joblib.dump(convertdf(ember2018), os.path.join(ember2018, 'ember2018_ft_test.data'))
 

@@ -7,7 +7,7 @@ import pandas as pd
 import lightgbm as lgb
 import xgboost as xgb
 import catboost as cb
-
+import warnings
 
 from ember import *
 from .debug import *
@@ -18,13 +18,14 @@ from sklearn.model_selection import GridSearchCV, TimeSeriesSplit, cross_validat
 from sklearn.metrics import accuracy_score, roc_auc_score
 from sklearn.utils import shuffle
 from sklearnex import patch_sklearn
-patch_sklearn()
+#patch_sklearn()
 
 
 class Boosting(object):
 
-    def __init__(self, session, experiment='Demo', booster='lgb', dataset='ember2018', features=None, shuffle=False,
-                 n_estimator=1000, n_jobs=0, min_features=20, url=None, configpath='config/fyp.json'):
+    def __init__(self, session, experiment='Demo', booster='lgb', dataset='ember2018', defaultdataset=True,
+                 features=None, shuffle=False, n_estimator=100, n_jobs=0, min_features=20, url=None,
+                 configpath='config/fyp.json', verbose=True):
         import mlflow, ember
         self.boostercol = {'cb': 'catbooster', 'lgb': 'lightgbm', 'xgb': 'xgboost'}
         self.startsessiontime, self.memmetrics, self.model = None, None, None
@@ -32,11 +33,13 @@ class Boosting(object):
         self.session = session
         self.experiment = experiment
         self._ember = ember
+        self.verbose = verbose
         self._mlflow = mlflow
         self.booster = booster
         self.min_features = min_features
         self.n_jobs = int(n_jobs)
         self.n_estimator = int(n_estimator)
+        self.defaultdata = defaultdataset
         self.max_fpr = [0.01, 0.001]
         self.projectpath = os.path.dirname(os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentframe()))))
         self.logger = self.create_logsession(session)
@@ -45,9 +48,13 @@ class Boosting(object):
             self.setup_mlflow(os.path.join(self.projectpath, 'config', 'mlflow'))
         else:
             self.setup_mlflow(url)
-        self.X_train, self.y_train, self.X_test, self.y_test = self.load_data(dataset)
+        if not verbose:
+            warnings.filterwarnings('ignore')
+        self.X_train, self.y_train, self.X_test, self.y_test = self.load_data(dataset, default=self.defaultdata)
         self.y_train_pred, self.y_test_pred = None, None
-        self.features = emberfeatures().features
+        self.features = emberfeatures().features if self.defaultdata else self.X_train.columns.tolist()
+        if self.X_train.shape[1] != len(self.features):
+            raise("Train features are not match with reference features list!!!")
         if features is not None and isinstance(features, list) and len(self.features) == len(self.X_train.shape[1]):
             features_ix = [self.features.index(x) for i,x in enumerate(features)]
             self.X_train, self.X_test = self.X_train[:, features_ix], self.X_test[:, features_ix]
@@ -85,14 +92,15 @@ class Boosting(object):
         self.stage = [stage] if stage else []
         params = estimator.get_all_params() if self.booster == 'cb' else estimator.get_params()
         self._mlflow.log_params(params)
-        self._mlflow.log_params(self.configrun)
+        #self._mlflow.log_params(self.configrun)
         with open('features_list.txt', 'w') as fp:
             fp.write('\n'.join(self.features))
         self._mlflow.log_artifact('features_list.txt')
 
     def metrics(self, estimator, run, stage=''):
         self.stage = [stage] if stage else []
-        self._mlflow.log_metric(self.keyname('fit_time'), time.time()-self.startsessiontime)
+        self._mlflow.log_metric(self.keyname('fit_time'), int((time.time() - self.startsessiontime) % 60))
+        self._mlflow.log_metric(self.keyname('fit_time_raw'), int(time.time() - self.startsessiontime))
         #self._mlflow.sklearn.eval_and_log_metrics(model=estimator, X=self.X_test, y_true=self.y_test, prefix=f'{stage}_')
         if self.y_test_pred is not None:
             for maxfpr in self.max_fpr:
@@ -135,16 +143,25 @@ class Boosting(object):
     def keyname(self, name):
         return '_'.join(self.stage + [name])
 
-    def load_data(self, datasetpath):
+    def load_data(self, datasetpath, default=False):
         if not os.path.exists(datasetpath):
             raise FileNotFoundError("Make sure dataset has been converted!")
-        self.X_train, self.y_train, self.X_test, self.y_test = self._ember.read_vectorized_features(datasetpath)
-        if self.shuffle:
-            self.X_train, self.y_train = shuffle(self.X_train, self.y_train, random_state=32)
-        delunknown = (self.y_train != -1)
-        self.X_train, self.y_train = self.X_train[delunknown], self.y_train[delunknown]
-        delunknown = (self.y_test != -1)
-        self.X_test, self.y_test = self.X_test[delunknown], self.y_test[delunknown]
+        if default:
+            self.X_train, self.y_train, self.X_test, self.y_test = self._ember.read_vectorized_features(datasetpath)
+            if self.shuffle:
+                self.X_train, self.y_train = shuffle(self.X_train, self.y_train, random_state=32)
+            delunknown = (self.y_train != -1)
+            self.X_train, self.y_train = self.X_train[delunknown], self.y_train[delunknown]
+            delunknown = (self.y_test != -1)
+            self.X_test, self.y_test = self.X_test[delunknown], self.y_test[delunknown]
+
+        else:
+            traindf = pd.read_pickle(os.path.join(datasetpath, 'ember2018_ft_train.data'))
+            testdf = pd.read_pickle(os.path.join(datasetpath, 'ember2018_ft_test.data'))
+            self.X_train, self.y_train = traindf.drop('label', axis=1), traindf['label']
+            self.X_test, self.y_test = testdf.drop('label', axis=1), testdf['label']
+        if self.verbose:
+            print(f'X_train: {self.X_train.shape}\n y_train: {self.y_train.shape}\nX_test: {self.X_test.shape}\n y_test: {self.y_test.shape}\n')
         return self.X_train, self.y_train, self.X_test, self.y_test
 
     def save_model(self, estimator):
@@ -157,22 +174,29 @@ class Boosting(object):
             self._mlflow.catboost.log_model(estimator, 'model')
 
     def train_execution(self):
-        self._mlflow.sklearn.autolog()
+        verbose = 5 if self.verbose else -1
+        silent = False if self.verbose else True
+        self._mlflow.sklearn.autolog(silent=silent)
         if self.booster == 'lgb':
-            self._mlflow.lightgbm.autolog()
-            self.model = lgb.LGBMClassifier(boosting_type='goss', objective='binary', n_estimators=self.n_estimator, n_jobs=self.n_jobs, verbose=5)
+            self._mlflow.lightgbm.autolog(silent=silent)
+            self.model = lgb.LGBMClassifier(boosting_type='goss', objective='binary', n_estimators=self.n_estimator, n_jobs=self.n_jobs, verbose=verbose)
         elif self.booster == 'xgb':
-            self._mlflow.xgboost.autolog()
-            self.model = xgb.XGBClassifier(booster='dart', objective="binary:logistic", n_estimators=self.n_estimator, n_jobs=self.n_jobs, verbose=5)
+            self._mlflow.xgboost.autolog(silent=silent)
+            self.model = xgb.XGBClassifier(booster='dart', objective="binary:logistic", n_estimators=self.n_estimator, n_jobs=self.n_jobs, silent=silent)
         elif self.booster == 'cb':
-            self.model = cb.CatBoostClassifier(boosting_type='Ordered', n_estimators=self.n_estimator, thread_count=self.n_jobs, verbose=5)
-        self.model.fit(self.X_train, self.y_train, verbose=10)
+            self.model = cb.CatBoostClassifier(boosting_type='Ordered', n_estimators=self.n_estimator, thread_count=self.n_jobs, verbose=verbose)
+        self.model.fit(self.X_train, self.y_train, verbose=self.verbose)
 
     def cv_execution(self, n=5, copy=True):
         for cv, (train_ix, test_ix) in enumerate(TimeSeriesSplit(n_splits=n).split(self.X_train)):
-            with self._mlflow.start_run(run_name=f'cross_validation_{cv}', nested=True) as child_run:
+            with self._mlflow.start_run(run_name=f'cross_validation_{cv}', tags=self.config_params(cv), nested=True) as child_run:
                 cvmodel = deepcopy(self.model) if copy else self.model
-                cvmodel.fit(self.X_train[train_ix], self.y_train[train_ix])
+                if self.verbose:
+                    print(train_ix, test_ix)
+                if isinstance(self.X_train, pd.DataFrame):
+                    cvmodel.fit(self.X_train.iloc[train_ix], self.y_train.iloc[train_ix], verbose=self.verbose)
+                else:
+                    cvmodel.fit(self.X_train[train_ix], self.y_train[train_ix], verbose=self.verbose)
                 self.y_test_pred = cvmodel.predict(self.X_test)
                 self.params(cvmodel, child_run, stage=f'{cv}')
                 self.metrics(cvmodel, child_run, stage=f'{cv}')
@@ -180,17 +204,19 @@ class Boosting(object):
 
     def config_params(self, n):
         self.configrun = {
+            'defaultdataset': str(self.defaultdata),
+            'n_features': str(self.X_train.shape[1]),
+            'boosting_model': self.boostercol[self.booster],
             'session': self.session,
             'experiment': self.experiment,
-            'boosting_model': self.boostercol[self.booster],
-            'cross_validation': n,
-            'min_features': self.min_features,
+            'cross_validation': str(n),
+            'min_features': str(self.min_features),
         }
         return self.configrun
 
     def main(self, cv=True, n=3):
         self.startsessiontime = time.time()
-        with self._mlflow.start_run(run_name=f'[main]_{self.session}') as run:
+        with self._mlflow.start_run(run_name=f'main', tags=self.config_params(n)) as run:
             self.config_params(n)
             self.memmetrics = memory_usage(self.train_execution)
             self.y_test_pred = self.model.predict(self.X_test)
@@ -199,7 +225,7 @@ class Boosting(object):
             self.save_model(self.model)
             if cv:
                 self.cv_execution(n)
-            self._mlflow.log_metric('session_time', time.time()-self.startsessiontime)
+            self._mlflow.log_metric('session_time', int((time.time() - self.startsessiontime) % 60))
 
 
 

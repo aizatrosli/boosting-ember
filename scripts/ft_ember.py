@@ -126,8 +126,8 @@ def run():
     print(feature_defs, len(feature_defs))
     print(feature_matrix.shape)
     print(feature_matrix)
-    joblib.dump(feature_matrix, os.path.join(ember2018, 'ember2018_ft_test_gen5.data'))
-    ft.save_features(feature_defs, os.path.join(ember2018, 'ember2018_ft_test_gen5.json'))
+    feature_matrix.to_pickle(os.path.join(ember2018, 'ember2018_ft_big.data'), compression=None)
+    ft.save_features(feature_defs, os.path.join(ember2018, 'ember2018_ft_big.json'))
     
 
 

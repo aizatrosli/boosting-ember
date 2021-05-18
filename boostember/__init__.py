@@ -12,7 +12,7 @@ import warnings
 from ember import *
 from .debug import *
 from .features_extended import *
-from .utlis import *
+from .utils import *
 import matplotlib.pyplot as plt
 from sklearn.model_selection import GridSearchCV, TimeSeriesSplit, cross_validate
 from sklearn.metrics import accuracy_score, roc_auc_score
@@ -25,12 +25,13 @@ class Boosting(object):
 
     def __init__(self, session, experiment='Demo', booster='lgb', dataset='ember2018', defaultdataset=True,
                  features=None, shuffle=False, n_estimator=100, n_jobs=0, min_features=20, url=None,
-                 configpath='config/fyp.json', verbose=True):
+                 configpath='config/fyp.json', verbose=True, notime=True):
         import mlflow, ember
         self.boostercol = {'cb': 'catbooster', 'lgb': 'lightgbm', 'xgb': 'xgboost'}
         self.startsessiontime, self.memmetrics, self.model = None, None, None
         self.shuffle = shuffle
         self.session = session
+        self.notime = notime
         self.experiment = experiment
         self._ember = ember
         self.verbose = verbose
@@ -55,9 +56,13 @@ class Boosting(object):
         self.features = emberfeatures().features if self.defaultdata else self.X_train.columns.tolist()
         if self.X_train.shape[1] != len(self.features):
             raise("Train features are not match with reference features list!!!")
-        if features is not None and isinstance(features, list) and len(self.features) == len(self.X_train.shape[1]):
-            features_ix = [self.features.index(x) for i,x in enumerate(features)]
-            self.X_train, self.X_test = self.X_train[:, features_ix], self.X_test[:, features_ix]
+        if features is not None and isinstance(features, list):
+            if isinstance(self.X_train, pd.DataFrame):
+                features_ix = features.copy()
+                self.X_train, self.X_test = self.X_train[features_ix], self.X_test[features_ix]
+            else:
+                features_ix = [self.features.index(x) for i, x in enumerate(features)]
+                self.X_train, self.X_test = self.X_train[:, features_ix], self.X_test[:, features_ix]
             self.features = features
 
     def load_config(self, configpath):
@@ -158,8 +163,10 @@ class Boosting(object):
         else:
             traindf = pd.read_pickle(os.path.join(datasetpath, 'ember2018_ft_train.data'))
             testdf = pd.read_pickle(os.path.join(datasetpath, 'ember2018_ft_test.data'))
-            self.X_train, self.y_train = traindf.drop('label', axis=1), traindf['label']
-            self.X_test, self.y_test = testdf.drop('label', axis=1), testdf['label']
+            dropcol = [col for col in traindf.columns.tolist() if 'timestamp' in col]
+            dropcol = ['label']+dropcol if self.notime else 'label'
+            self.X_train, self.y_train = traindf.drop(dropcol, axis=1), traindf['label'].astype('float32')
+            self.X_test, self.y_test = testdf.drop(dropcol, axis=1), testdf['label'].astype('float32')
         if self.verbose:
             print(f'X_train: {self.X_train.shape}\n y_train: {self.y_train.shape}\nX_test: {self.X_test.shape}\n y_test: {self.y_test.shape}\n')
         return self.X_train, self.y_train, self.X_test, self.y_test

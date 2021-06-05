@@ -1,12 +1,12 @@
-import math,mlflow
+import math,mlflow,os,json
 
 config = {}
-
+targetcol = []
 
 def setup_mlflow(url, file='mlflow.json'):
     import requests, pickle
     from urllib.parse import urlparse
-    data = pickle.loads(requests.get(url).content) if urlparse(url).scheme else pickle.loads(open(url, 'rb').read())
+    data = pickle.loads(open(url, 'rb').read())
     config.update(data)
     for key, val in data.items():
         if isinstance(val, str):
@@ -17,7 +17,7 @@ def setup_mlflow(url, file='mlflow.json'):
     mlflow.set_tracking_uri(config['tracking_uri'])
 
 
-def getdata(row):
+def getdata(row ,targetcol):
     for key,val in row.items():
         if val is not None and 'metric' in key:
             for col in targetcol:
@@ -30,6 +30,7 @@ def run(url, filterstr='tags.session LIKE "%n100 %"'):
     config['tracking_uri'] = "https://atlascompanion.live/"
     setup_mlflow(url, file='mlflow.json')
     df = mlflow.search_runs(experiment_ids=[5], filter_string=filterstr)
-    df = df.apply(getdata, axis=1)
+    targetcol = [col.split('1_', 1)[-1] for col in df.columns.tolist() if '1_' in col and '1_.' not in col]
+    df = df.apply(getdata, targetcol=targetcol, axis=1)
     return df
 
